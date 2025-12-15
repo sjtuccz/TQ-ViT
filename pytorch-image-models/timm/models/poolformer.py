@@ -210,6 +210,7 @@ class PoolFormerBlock(nn.Module):
             feat1 = x
             x = x + self.drop_path(self.mlp(self.norm2(x)))
             feat2 = x
+        print("x shape in PoolFormerBlock:", x.shape)
         # print(f'use layer scale: {self.use_layer_scale}, x shape: {x.shape}')
         return x, (feat1, feat2)
 # 暂时

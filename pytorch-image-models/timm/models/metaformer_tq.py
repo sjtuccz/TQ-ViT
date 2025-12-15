@@ -1,8 +1,8 @@
 """
-Poolformer from MetaFormer is Actually What You Need for Vision https://arxiv.org/abs/2111.11418
+Poolformer from TQ_MetaFormer is Actually What You Need for Vision https://arxiv.org/abs/2111.11418
 
 IdentityFormer, RandFormer, PoolFormerV2, ConvFormer, and CAFormer
-from MetaFormer Baselines for Vision https://arxiv.org/abs/2210.13452
+from TQ_MetaFormer Baselines for Vision https://arxiv.org/abs/2210.13452
 
 All implemented models support feature extraction and variable input resolution.
 
@@ -42,8 +42,9 @@ from timm.layers import trunc_normal_, DropPath, SelectAdaptivePool2d, GroupNorm
 from ._builder import build_model_with_cfg
 from ._manipulate import checkpoint_seq
 from ._registry import generate_default_cfgs, register_model
+from timm.models.vectorquantize import choose_vq
 
-__all__ = ['MetaFormer']
+__all__ = ['TQ_MetaFormer']
 
 
 class Stem(nn.Module):
@@ -317,9 +318,9 @@ class MlpHead(nn.Module):
         return x
 
 
-class MetaFormerBlock(nn.Module):
+class TQ_MetaFormerBlock(nn.Module):
     """
-    Implementation of one MetaFormer block.
+    Implementation of one TQ_MetaFormer block.
     """
 
     def __init__(
@@ -372,11 +373,117 @@ class MetaFormerBlock(nn.Module):
                     self.mlp(self.norm2(x))
                 )
             )
-        # print("x shape in MetaFormerBlock:", x.shape)
+        return x
+
+class TQ_MetaFormerBlock_TQ_FFN(nn.Module):
+    """
+    Implementation of one TQ_MetaFormer block.
+    """
+
+    def __init__(
+            self,
+            dim,
+            token_mixer=Pooling,
+            mlp_act=StarReLU,
+            mlp_bias=False,
+            norm_layer=LayerNorm2d,
+            proj_drop=0.,
+            drop_path=0.,
+            use_nchw=True,
+            layer_scale_init_value=None,
+            res_scale_init_value=None,
+
+            vq_type='fsq_qd',fsq_level = [3,3,3,3],
+            dic_n=None, dic_dim=4, fsq_Tinit=1,
+
+            **kwargs
+    ):
+        super().__init__()
+        ls_layer = partial(Scale, dim=dim, init_value=layer_scale_init_value, use_nchw=use_nchw)
+        rs_layer = partial(Scale, dim=dim, init_value=res_scale_init_value, use_nchw=use_nchw)
+
+        self.norm1 = norm_layer(dim)
+        self.token_mixer = token_mixer(dim=dim, proj_drop=proj_drop, **kwargs)
+        self.drop_path1 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.layer_scale1 = ls_layer() if layer_scale_init_value is not None else nn.Identity()
+        self.res_scale1 = rs_layer() if res_scale_init_value is not None else nn.Identity()
+
+        self.norm2 = norm_layer(dim)
+        self.mlp = Mlp(
+            dim,
+            int(4 * dim),
+            act_layer=mlp_act,
+            bias=mlp_bias,
+            drop=proj_drop,
+            use_conv=use_nchw,
+        )
+        self.drop_path2 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.layer_scale2 = ls_layer() if layer_scale_init_value is not None else nn.Identity()
+        self.res_scale2 = rs_layer() if res_scale_init_value is not None else nn.Identity()
+        self.tq = choose_vq(vq_type=vq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit, input_format='NCHW' if use_nchw else'NCL')
+        self.token_wise_rep = False
+        self.dim = dim
+        self.use_nchw = use_nchw
+    def reparameterize(self):
+        ''' 
+        reparameterize the vq dict and calculate the rep_codebook for inference, 
+        the case where the codebook is not a square matrix has also been taken into consideration. 
+        '''
+        print('using Block reparameterize')
+        self.token_wise_rep = True
+        self.rep_codebook = nn.Embedding(self.tq.codebook_size, self.dim)
+        # print(self.dim)
+        fixed_codebook = self.tq.reparameterize() # (codebook size, dim)
+        if self.use_nchw:
+            N, D = fixed_codebook.shape[0], fixed_codebook.shape[1]
+            fixed_codebook_transposed = fixed_codebook.transpose(0, 1).contiguous() # N, D -> D, N
+            # handle the case where N is not a perfect square number for Conv
+            h = int(torch.sqrt(torch.tensor(N)).ceil().item())
+            w = (N + h - 1) // h
+            if h * w > N:
+                pad_size = h * w - N
+                x_padded = torch.cat([fixed_codebook_transposed, torch.zeros(D, pad_size, device=fixed_codebook_transposed.device)], dim=1)
+            else:
+                x_padded = fixed_codebook_transposed
+            fixed_codebook_rep = x_padded.reshape(1, D,h,w) # (1, D, h, w)
+            x = self.mlp(fixed_codebook_rep)
+            x = self.layer_scale2(x)
+            x = x.reshape(D, -1) # (D, h*w)
+            if h * w > N:
+                x = x[:, :N] # (D, N)
+            x = x.transpose(0, 1).contiguous() # (N, D)
+        else:
+            x = self.mlp(fixed_codebook)
+            x = self.layer_scale2(x)
+        self.rep_codebook.weight.data.copy_(x)
+        del self.mlp
+        del self.layer_scale2
+
+    def forward(self, x):
+        x = self.res_scale1(x) + \
+            self.layer_scale1(
+                self.drop_path1(
+                    self.token_mixer(self.norm1(x))
+                )
+            )
+        
+        res = self.res_scale2(x) 
+        x = self.norm2(x)
+        if self.token_wise_rep:
+            embedding_index =  self.tq(x)
+            z_q = self.rep_codebook(embedding_index)
+            if self.use_nchw:
+                x = z_q.transpose(1, 2).reshape(res.shape)
+            else:
+                x = z_q
+            return x+res
+        x = self.tq(x)
+        x = self.mlp(x)
+        x = res+ self.layer_scale2(self.drop_path2(x))
         return x
 
 
-class MetaFormerStage(nn.Module):
+class TQ_MetaFormerStage(nn.Module):
 
     def __init__(
             self,
@@ -392,6 +499,10 @@ class MetaFormerStage(nn.Module):
             dp_rates=[0.] * 2,
             layer_scale_init_value=None,
             res_scale_init_value=None,
+
+            vq_type='fsq_qd',fsq_level = [3,3,3,3],
+            dic_n=None, dic_dim=4, fsq_Tinit=1,
+
             **kwargs,
     ):
         super().__init__()
@@ -408,21 +519,42 @@ class MetaFormerStage(nn.Module):
             padding=1,
             norm_layer=downsample_norm,
         )
+        blocks = []
+        for i in range(depth):
+            if i%2 == 0:
+                blocks.append(TQ_MetaFormerBlock(
+                    dim=out_chs,
+                    token_mixer=token_mixer,
+                    mlp_act=mlp_act,
+                    mlp_bias=mlp_bias,
+                    norm_layer=norm_layer,
+                    proj_drop=proj_drop,
+                    drop_path=dp_rates[i],
+                    layer_scale_init_value=layer_scale_init_value,
+                    res_scale_init_value=res_scale_init_value,
+                    use_nchw=self.use_nchw,
+                    **kwargs,
+                ))
+            else:
+                blocks.append(TQ_MetaFormerBlock_TQ_FFN(
+                    dim=out_chs,
+                    token_mixer=token_mixer,
+                    mlp_act=mlp_act,
+                    mlp_bias=mlp_bias,
+                    norm_layer=norm_layer,
+                    proj_drop=proj_drop,
+                    drop_path=dp_rates[i],
+                    layer_scale_init_value=layer_scale_init_value,
+                    res_scale_init_value=res_scale_init_value,
+                    use_nchw=self.use_nchw,
 
-        self.blocks = nn.Sequential(*[MetaFormerBlock(
-            dim=out_chs,
-            token_mixer=token_mixer,
-            mlp_act=mlp_act,
-            mlp_bias=mlp_bias,
-            norm_layer=norm_layer,
-            proj_drop=proj_drop,
-            drop_path=dp_rates[i],
-            layer_scale_init_value=layer_scale_init_value,
-            res_scale_init_value=res_scale_init_value,
-            use_nchw=self.use_nchw,
-            **kwargs,
-        ) for i in range(depth)])
+                    vq_type=vq_type, fsq_level = fsq_level,
+                    dic_n=dic_n, dic_dim=dic_dim, fsq_Tinit=fsq_Tinit,
 
+                    **kwargs,
+                ))
+        self.blocks = nn.Sequential(*blocks)
+        self.token_wise_rep = False
     @torch.jit.ignore
     def set_grad_checkpointing(self, enable=True):
         self.grad_checkpointing = enable
@@ -443,11 +575,15 @@ class MetaFormerStage(nn.Module):
             x = x.transpose(1, 2).reshape(B, C, H, W)
 
         return x
+    def reparameterize(self):
+        self.token_wise_rep = True
+        for block in self.blocks:
+            if hasattr(block, 'reparameterize'):
+                block.reparameterize()
 
-
-class MetaFormer(nn.Module):
-    r""" MetaFormer
-        A PyTorch impl of : `MetaFormer Baselines for Vision`  -
+class TQ_MetaFormer(nn.Module):
+    r""" TQ_MetaFormer
+        A PyTorch impl of : `TQ_MetaFormer Baselines for Vision`  -
           https://arxiv.org/abs/2210.13452
 
     Args:
@@ -490,6 +626,10 @@ class MetaFormer(nn.Module):
             norm_layers=LayerNorm2dNoBias,
             output_norm=LayerNorm2d,
             use_mlp_head=True,
+
+            vq_type='fsq_qd',fsq_level = [3,3,3,3],
+            dic_n=None, dic_dim=4, fsq_Tinit=1,
+
             **kwargs,
     ):
         super().__init__()
@@ -526,7 +666,7 @@ class MetaFormer(nn.Module):
         prev_dim = dims[0]
         dp_rates = [x.tolist() for x in torch.linspace(0, drop_path_rate, sum(depths)).split(depths)]
         for i in range(self.num_stages):
-            stages += [MetaFormerStage(
+            stages += [TQ_MetaFormerStage(
                 prev_dim,
                 dims[i],
                 depth=depths[i],
@@ -539,6 +679,10 @@ class MetaFormer(nn.Module):
                 res_scale_init_value=res_scale_init_values[i],
                 downsample_norm=downsample_norm,
                 norm_layer=norm_layers[i],
+
+                vq_type=vq_type, fsq_level = fsq_level,
+                dic_n=dic_n, dic_dim=dic_dim, fsq_Tinit=fsq_Tinit,
+
                 **kwargs,
             )]
             prev_dim = dims[i]
@@ -564,7 +708,7 @@ class MetaFormer(nn.Module):
         ]))
 
         self.apply(self._init_weights)
-
+        self.token_wise_rep = False
     def _init_weights(self, m):
         if isinstance(m, (nn.Conv2d, nn.Linear)):
             trunc_normal_(m.weight, std=.02)
@@ -614,19 +758,31 @@ class MetaFormer(nn.Module):
         x = self.forward_features(x)
         x = self.forward_head(x)
         return x
+    def reparameterize(self):
+        self.token_wise_rep = True
+        for module in self.stages:  # 遍历ModuleList中的每个模块
+            print(f"Found module: {module.__class__.__name__.lower()}, {isinstance(module, nn.Sequential)}")
+            if isinstance(module, nn.Sequential):
+                for name, submodule in module.named_children():
+                    print(f"    Found sub module: {submodule.__class__.__name__.lower()}")
+                    if hasattr(submodule, 'reparameterize'):
+                        print(f"        Found VQ module in Sequential: {submodule.__class__.__name__.lower()}")
+                        submodule.reparameterize()
+            else:
+                if hasattr(module, 'reparameterize'):
+                    module.reparameterize()
 
-
-# this works but it's long and breaks backwards compatability with weights from the poolformer-only impl
+# this works but it's long and breaks backwards compatability with weights from the tq_poolformer-only impl
 def checkpoint_filter_fn(state_dict, model):
     if 'stem.conv.weight' in state_dict:
         return state_dict
 
     import re
     out_dict = {}
-    is_poolformerv1 = 'network.0.0.mlp.fc1.weight' in state_dict
+    is_tq_poolformerv1 = 'network.0.0.mlp.fc1.weight' in state_dict
     model_state_dict = model.state_dict()
     for k, v in state_dict.items():
-        if is_poolformerv1:
+        if is_tq_poolformerv1:
             k = re.sub(r'layer_scale_([0-9]+)', r'layer_scale\1.scale', k)
             k = k.replace('network.1', 'downsample_layers.1')
             k = k.replace('network.3', 'downsample_layers.2')
@@ -654,12 +810,12 @@ def checkpoint_filter_fn(state_dict, model):
     return out_dict
 
 
-def _create_metaformer(variant, pretrained=False, **kwargs):
+def _create_tq_metaformer(variant, pretrained=False, **kwargs):
     default_out_indices = tuple(i for i, _ in enumerate(kwargs.get('depths', (2, 2, 6, 2))))
     out_indices = kwargs.pop('out_indices', default_out_indices)
 
     model = build_model_with_cfg(
-        MetaFormer,
+        TQ_MetaFormer,
         variant,
         pretrained,
         pretrained_filter_fn=checkpoint_filter_fn,
@@ -682,160 +838,160 @@ def _cfg(url='', **kwargs):
 
 
 default_cfgs = generate_default_cfgs({
-    'poolformer_s12.sail_in1k': _cfg(
+    'tq_poolformer_s12.sail_in1k': _cfg(
         hf_hub_id='timm/',
         crop_pct=0.9),
-    'poolformer_s24.sail_in1k': _cfg(
+    'tq_poolformer_s24.sail_in1k': _cfg(
         hf_hub_id='timm/',
         crop_pct=0.9),
-    'poolformer_s36.sail_in1k': _cfg(
+    'tq_poolformer_s36.sail_in1k': _cfg(
         hf_hub_id='timm/',
         crop_pct=0.9),
-    'poolformer_m36.sail_in1k': _cfg(
+    'tq_poolformer_m36.sail_in1k': _cfg(
         hf_hub_id='timm/',
         crop_pct=0.95),
-    'poolformer_m48.sail_in1k': _cfg(
+    'tq_poolformer_m48.sail_in1k': _cfg(
         hf_hub_id='timm/',
         crop_pct=0.95),
 
-    'poolformerv2_s12.sail_in1k': _cfg(hf_hub_id='timm/'),
-    'poolformerv2_s24.sail_in1k': _cfg(hf_hub_id='timm/'),
-    'poolformerv2_s36.sail_in1k': _cfg(hf_hub_id='timm/'),
-    'poolformerv2_m36.sail_in1k': _cfg(hf_hub_id='timm/'),
-    'poolformerv2_m48.sail_in1k': _cfg(hf_hub_id='timm/'),
+    'tq_poolformerv2_s12.sail_in1k': _cfg(hf_hub_id='timm/'),
+    'tq_poolformerv2_s24.sail_in1k': _cfg(hf_hub_id='timm/'),
+    'tq_poolformerv2_s36.sail_in1k': _cfg(hf_hub_id='timm/'),
+    'tq_poolformerv2_m36.sail_in1k': _cfg(hf_hub_id='timm/'),
+    'tq_poolformerv2_m48.sail_in1k': _cfg(hf_hub_id='timm/'),
 
-    'convformer_s18.sail_in1k': _cfg(
+    'tq_convformer_s18.sail_in1k': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2'),
-    'convformer_s18.sail_in1k_384': _cfg(
+    'tq_convformer_s18.sail_in1k_384': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2', input_size=(3, 384, 384), pool_size=(12, 12)),
-    'convformer_s18.sail_in22k_ft_in1k': _cfg(
+    'tq_convformer_s18.sail_in22k_ft_in1k': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2'),
-    'convformer_s18.sail_in22k_ft_in1k_384': _cfg(
+    'tq_convformer_s18.sail_in22k_ft_in1k_384': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2', input_size=(3, 384, 384), pool_size=(12, 12)),
-    'convformer_s18.sail_in22k': _cfg(
+    'tq_convformer_s18.sail_in22k': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2', num_classes=21841),
 
-    'convformer_s36.sail_in1k': _cfg(
+    'tq_convformer_s36.sail_in1k': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2'),
-    'convformer_s36.sail_in1k_384': _cfg(
+    'tq_convformer_s36.sail_in1k_384': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2', input_size=(3, 384, 384), pool_size=(12, 12)),
-    'convformer_s36.sail_in22k_ft_in1k': _cfg(
+    'tq_convformer_s36.sail_in22k_ft_in1k': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2'),
-    'convformer_s36.sail_in22k_ft_in1k_384': _cfg(
+    'tq_convformer_s36.sail_in22k_ft_in1k_384': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2', input_size=(3, 384, 384), pool_size=(12, 12)),
-    'convformer_s36.sail_in22k': _cfg(
+    'tq_convformer_s36.sail_in22k': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2', num_classes=21841),
 
-    'convformer_m36.sail_in1k': _cfg(
+    'tq_convformer_m36.sail_in1k': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2'),
-    'convformer_m36.sail_in1k_384': _cfg(
+    'tq_convformer_m36.sail_in1k_384': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2', input_size=(3, 384, 384), pool_size=(12, 12)),
-    'convformer_m36.sail_in22k_ft_in1k': _cfg(
+    'tq_convformer_m36.sail_in22k_ft_in1k': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2'),
-    'convformer_m36.sail_in22k_ft_in1k_384': _cfg(
+    'tq_convformer_m36.sail_in22k_ft_in1k_384': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2', input_size=(3, 384, 384), pool_size=(12, 12)),
-    'convformer_m36.sail_in22k': _cfg(
+    'tq_convformer_m36.sail_in22k': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2', num_classes=21841),
 
-    'convformer_b36.sail_in1k': _cfg(
+    'tq_convformer_b36.sail_in1k': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2'),
-    'convformer_b36.sail_in1k_384': _cfg(
+    'tq_convformer_b36.sail_in1k_384': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2', input_size=(3, 384, 384), pool_size=(12, 12)),
-    'convformer_b36.sail_in22k_ft_in1k': _cfg(
+    'tq_convformer_b36.sail_in22k_ft_in1k': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2'),
-    'convformer_b36.sail_in22k_ft_in1k_384': _cfg(
+    'tq_convformer_b36.sail_in22k_ft_in1k_384': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2', input_size=(3, 384, 384), pool_size=(12, 12)),
-    'convformer_b36.sail_in22k': _cfg(
+    'tq_convformer_b36.sail_in22k': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2', num_classes=21841),
 
-    'caformer_s18.sail_in1k': _cfg(
+    'tq_caformer_s18.sail_in1k': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2'),
-    'caformer_s18.sail_in1k_384': _cfg(
+    'tq_caformer_s18.sail_in1k_384': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2', input_size=(3, 384, 384), pool_size=(12, 12)),
-    'caformer_s18.sail_in22k_ft_in1k': _cfg(
+    'tq_caformer_s18.sail_in22k_ft_in1k': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2'),
-    'caformer_s18.sail_in22k_ft_in1k_384': _cfg(
+    'tq_caformer_s18.sail_in22k_ft_in1k_384': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2', input_size=(3, 384, 384), pool_size=(12, 12)),
-    'caformer_s18.sail_in22k': _cfg(
+    'tq_caformer_s18.sail_in22k': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2', num_classes=21841),
 
-    'caformer_s36.sail_in1k': _cfg(
+    'tq_caformer_s36.sail_in1k': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2'),
-    'caformer_s36.sail_in1k_384': _cfg(
+    'tq_caformer_s36.sail_in1k_384': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2', input_size=(3, 384, 384), pool_size=(12, 12)),
-    'caformer_s36.sail_in22k_ft_in1k': _cfg(
+    'tq_caformer_s36.sail_in22k_ft_in1k': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2'),
-    'caformer_s36.sail_in22k_ft_in1k_384': _cfg(
+    'tq_caformer_s36.sail_in22k_ft_in1k_384': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2', input_size=(3, 384, 384), pool_size=(12, 12)),
-    'caformer_s36.sail_in22k': _cfg(
+    'tq_caformer_s36.sail_in22k': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2', num_classes=21841),
 
-    'caformer_m36.sail_in1k': _cfg(
+    'tq_caformer_m36.sail_in1k': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2'),
-    'caformer_m36.sail_in1k_384': _cfg(
+    'tq_caformer_m36.sail_in1k_384': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2', input_size=(3, 384, 384), pool_size=(12, 12)),
-    'caformer_m36.sail_in22k_ft_in1k': _cfg(
+    'tq_caformer_m36.sail_in22k_ft_in1k': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2'),
-    'caformer_m36.sail_in22k_ft_in1k_384': _cfg(
+    'tq_caformer_m36.sail_in22k_ft_in1k_384': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2', input_size=(3, 384, 384), pool_size=(12, 12)),
-    'caformer_m36.sail_in22k': _cfg(
+    'tq_caformer_m36.sail_in22k': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2', num_classes=21841),
 
-    'caformer_b36.sail_in1k': _cfg(
+    'tq_caformer_b36.sail_in1k': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2'),
-    'caformer_b36.sail_in1k_384': _cfg(
+    'tq_caformer_b36.sail_in1k_384': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2', input_size=(3, 384, 384), pool_size=(12, 12)),
-    'caformer_b36.sail_in22k_ft_in1k': _cfg(
+    'tq_caformer_b36.sail_in22k_ft_in1k': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2'),
-    'caformer_b36.sail_in22k_ft_in1k_384': _cfg(
+    'tq_caformer_b36.sail_in22k_ft_in1k_384': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2', input_size=(3, 384, 384), pool_size=(12, 12)),
-    'caformer_b36.sail_in22k': _cfg(
+    'tq_caformer_b36.sail_in22k': _cfg(
         hf_hub_id='timm/',
         classifier='head.fc.fc2', num_classes=21841),
 })
 
 
 @register_model
-def poolformer_s12(pretrained=False, **kwargs) -> MetaFormer:
+def tq_poolformer_s12(pretrained=False, **kwargs) -> TQ_MetaFormer:
     model_kwargs = dict(
         depths=[2, 2, 6, 2],
         dims=[64, 128, 320, 512],
@@ -847,11 +1003,11 @@ def poolformer_s12(pretrained=False, **kwargs) -> MetaFormer:
         res_scale_init_values=None,
         use_mlp_head=False,
         **kwargs)
-    return _create_metaformer('poolformer_s12', pretrained=pretrained, **model_kwargs)
+    return _create_tq_metaformer('tq_poolformer_s12', pretrained=pretrained, **model_kwargs)
 
 
 @register_model
-def poolformer_s24(pretrained=False, **kwargs) -> MetaFormer:
+def tq_poolformer_s24(pretrained=False, **kwargs) -> TQ_MetaFormer:
     model_kwargs = dict(
         depths=[4, 4, 12, 4],
         dims=[64, 128, 320, 512],
@@ -863,11 +1019,11 @@ def poolformer_s24(pretrained=False, **kwargs) -> MetaFormer:
         res_scale_init_values=None,
         use_mlp_head=False,
         **kwargs)
-    return _create_metaformer('poolformer_s24', pretrained=pretrained, **model_kwargs)
+    return _create_tq_metaformer('tq_poolformer_s24', pretrained=pretrained, **model_kwargs)
 
 
 @register_model
-def poolformer_s36(pretrained=False, **kwargs) -> MetaFormer:
+def tq_poolformer_s36(pretrained=False, **kwargs) -> TQ_MetaFormer:
     model_kwargs = dict(
         depths=[6, 6, 18, 6],
         dims=[64, 128, 320, 512],
@@ -879,11 +1035,11 @@ def poolformer_s36(pretrained=False, **kwargs) -> MetaFormer:
         res_scale_init_values=None,
         use_mlp_head=False,
         **kwargs)
-    return _create_metaformer('poolformer_s36', pretrained=pretrained, **model_kwargs)
+    return _create_tq_metaformer('tq_poolformer_s36', pretrained=pretrained, **model_kwargs)
 
 
 @register_model
-def poolformer_m36(pretrained=False, **kwargs) -> MetaFormer:
+def tq_poolformer_m36(pretrained=False, **kwargs) -> TQ_MetaFormer:
     model_kwargs = dict(
         depths=[6, 6, 18, 6],
         dims=[96, 192, 384, 768],
@@ -895,11 +1051,11 @@ def poolformer_m36(pretrained=False, **kwargs) -> MetaFormer:
         res_scale_init_values=None,
         use_mlp_head=False,
         **kwargs)
-    return _create_metaformer('poolformer_m36', pretrained=pretrained, **model_kwargs)
+    return _create_tq_metaformer('tq_poolformer_m36', pretrained=pretrained, **model_kwargs)
 
 
 @register_model
-def poolformer_m48(pretrained=False, **kwargs) -> MetaFormer:
+def tq_poolformer_m48(pretrained=False, **kwargs) -> TQ_MetaFormer:
     model_kwargs = dict(
         depths=[8, 8, 24, 8],
         dims=[96, 192, 384, 768],
@@ -911,147 +1067,147 @@ def poolformer_m48(pretrained=False, **kwargs) -> MetaFormer:
         res_scale_init_values=None,
         use_mlp_head=False,
         **kwargs)
-    return _create_metaformer('poolformer_m48', pretrained=pretrained, **model_kwargs)
+    return _create_tq_metaformer('tq_poolformer_m48', pretrained=pretrained, **model_kwargs)
 
 
 @register_model
-def poolformerv2_s12(pretrained=False, **kwargs) -> MetaFormer:
+def tq_poolformerv2_s12(pretrained=False, **kwargs) -> TQ_MetaFormer:
     model_kwargs = dict(
         depths=[2, 2, 6, 2],
         dims=[64, 128, 320, 512],
         norm_layers=GroupNorm1NoBias,
         use_mlp_head=False,
         **kwargs)
-    return _create_metaformer('poolformerv2_s12', pretrained=pretrained, **model_kwargs)
+    return _create_tq_metaformer('tq_poolformerv2_s12', pretrained=pretrained, **model_kwargs)
 
 
 @register_model
-def poolformerv2_s24(pretrained=False, **kwargs) -> MetaFormer:
+def tq_poolformerv2_s24(pretrained=False, **kwargs) -> TQ_MetaFormer:
     model_kwargs = dict(
         depths=[4, 4, 12, 4],
         dims=[64, 128, 320, 512],
         norm_layers=GroupNorm1NoBias,
         use_mlp_head=False,
         **kwargs)
-    return _create_metaformer('poolformerv2_s24', pretrained=pretrained, **model_kwargs)
+    return _create_tq_metaformer('tq_poolformerv2_s24', pretrained=pretrained, **model_kwargs)
 
 
 @register_model
-def poolformerv2_s36(pretrained=False, **kwargs) -> MetaFormer:
+def tq_poolformerv2_s36(pretrained=False, **kwargs) -> TQ_MetaFormer:
     model_kwargs = dict(
         depths=[6, 6, 18, 6],
         dims=[64, 128, 320, 512],
         norm_layers=GroupNorm1NoBias,
         use_mlp_head=False,
         **kwargs)
-    return _create_metaformer('poolformerv2_s36', pretrained=pretrained, **model_kwargs)
+    return _create_tq_metaformer('tq_poolformerv2_s36', pretrained=pretrained, **model_kwargs)
 
 
 @register_model
-def poolformerv2_m36(pretrained=False, **kwargs) -> MetaFormer:
+def tq_poolformerv2_m36(pretrained=False, **kwargs) -> TQ_MetaFormer:
     model_kwargs = dict(
         depths=[6, 6, 18, 6],
         dims=[96, 192, 384, 768],
         norm_layers=GroupNorm1NoBias,
         use_mlp_head=False,
         **kwargs)
-    return _create_metaformer('poolformerv2_m36', pretrained=pretrained, **model_kwargs)
+    return _create_tq_metaformer('tq_poolformerv2_m36', pretrained=pretrained, **model_kwargs)
 
 
 @register_model
-def poolformerv2_m48(pretrained=False, **kwargs) -> MetaFormer:
+def tq_poolformerv2_m48(pretrained=False, **kwargs) -> TQ_MetaFormer:
     model_kwargs = dict(
         depths=[8, 8, 24, 8],
         dims=[96, 192, 384, 768],
         norm_layers=GroupNorm1NoBias,
         use_mlp_head=False,
         **kwargs)
-    return _create_metaformer('poolformerv2_m48', pretrained=pretrained, **model_kwargs)
+    return _create_tq_metaformer('tq_poolformerv2_m48', pretrained=pretrained, **model_kwargs)
 
 
 @register_model
-def convformer_s18(pretrained=False, **kwargs) -> MetaFormer:
+def tq_convformer_s18(pretrained=False, **kwargs) -> TQ_MetaFormer:
     model_kwargs = dict(
         depths=[3, 3, 9, 3],
         dims=[64, 128, 320, 512],
         token_mixers=SepConv,
         norm_layers=LayerNorm2dNoBias,
         **kwargs)
-    return _create_metaformer('convformer_s18', pretrained=pretrained, **model_kwargs)
+    return _create_tq_metaformer('tq_convformer_s18', pretrained=pretrained, **model_kwargs)
 
 
 @register_model
-def convformer_s36(pretrained=False, **kwargs) -> MetaFormer:
+def tq_convformer_s36(pretrained=False, **kwargs) -> TQ_MetaFormer:
     model_kwargs = dict(
         depths=[3, 12, 18, 3],
         dims=[64, 128, 320, 512],
         token_mixers=SepConv,
         norm_layers=LayerNorm2dNoBias,
         **kwargs)
-    return _create_metaformer('convformer_s36', pretrained=pretrained, **model_kwargs)
+    return _create_tq_metaformer('tq_convformer_s36', pretrained=pretrained, **model_kwargs)
 
 
 @register_model
-def convformer_m36(pretrained=False, **kwargs) -> MetaFormer:
+def tq_convformer_m36(pretrained=False, **kwargs) -> TQ_MetaFormer:
     model_kwargs = dict(
         depths=[3, 12, 18, 3],
         dims=[96, 192, 384, 576],
         token_mixers=SepConv,
         norm_layers=LayerNorm2dNoBias,
         **kwargs)
-    return _create_metaformer('convformer_m36', pretrained=pretrained, **model_kwargs)
+    return _create_tq_metaformer('tq_convformer_m36', pretrained=pretrained, **model_kwargs)
 
 
 @register_model
-def convformer_b36(pretrained=False, **kwargs) -> MetaFormer:
+def tq_convformer_b36(pretrained=False, **kwargs) -> TQ_MetaFormer:
     model_kwargs = dict(
         depths=[3, 12, 18, 3],
         dims=[128, 256, 512, 768],
         token_mixers=SepConv,
         norm_layers=LayerNorm2dNoBias,
         **kwargs)
-    return _create_metaformer('convformer_b36', pretrained=pretrained, **model_kwargs)
+    return _create_tq_metaformer('tq_convformer_b36', pretrained=pretrained, **model_kwargs)
 
 
 @register_model
-def caformer_s18(pretrained=False, **kwargs) -> MetaFormer:
+def tq_caformer_s18(pretrained=False, **kwargs) -> TQ_MetaFormer:
     model_kwargs = dict(
         depths=[3, 3, 9, 3],
         dims=[64, 128, 320, 512],
         token_mixers=[SepConv, SepConv, Attention, Attention],
         norm_layers=[LayerNorm2dNoBias] * 2 + [LayerNormNoBias] * 2,
         **kwargs)
-    return _create_metaformer('caformer_s18', pretrained=pretrained, **model_kwargs)
+    return _create_tq_metaformer('tq_caformer_s18', pretrained=pretrained, **model_kwargs)
 
 
 @register_model
-def caformer_s36(pretrained=False, **kwargs) -> MetaFormer:
+def tq_caformer_s36(pretrained=False, **kwargs) -> TQ_MetaFormer:
     model_kwargs = dict(
         depths=[3, 12, 18, 3],
         dims=[64, 128, 320, 512],
         token_mixers=[SepConv, SepConv, Attention, Attention],
         norm_layers=[LayerNorm2dNoBias] * 2 + [LayerNormNoBias] * 2,
         **kwargs)
-    return _create_metaformer('caformer_s36', pretrained=pretrained, **model_kwargs)
+    return _create_tq_metaformer('tq_caformer_s36', pretrained=pretrained, **model_kwargs)
 
 
 @register_model
-def caformer_m36(pretrained=False, **kwargs) -> MetaFormer:
+def tq_caformer_m36(pretrained=False, **kwargs) -> TQ_MetaFormer:
     model_kwargs = dict(
         depths=[3, 12, 18, 3],
         dims=[96, 192, 384, 576],
         token_mixers=[SepConv, SepConv, Attention, Attention],
         norm_layers=[LayerNorm2dNoBias] * 2 + [LayerNormNoBias] * 2,
         **kwargs)
-    return _create_metaformer('caformer_m36', pretrained=pretrained, **model_kwargs)
+    return _create_tq_metaformer('tq_caformer_m36', pretrained=pretrained, **model_kwargs)
 
 
 @register_model
-def caformer_b36(pretrained=False, **kwargs) -> MetaFormer:
+def tq_caformer_b36(pretrained=False, **kwargs) -> TQ_MetaFormer:
     model_kwargs = dict(
         depths=[3, 12, 18, 3],
         dims=[128, 256, 512, 768],
         token_mixers=[SepConv, SepConv, Attention, Attention],
         norm_layers=[LayerNorm2dNoBias] * 2 + [LayerNormNoBias] * 2,
         **kwargs)
-    return _create_metaformer('caformer_b36', pretrained=pretrained, **model_kwargs)
+    return _create_tq_metaformer('tq_caformer_b36', pretrained=pretrained, **model_kwargs)

@@ -174,6 +174,7 @@ class Block(nn.Module):
         init_feat = x
         x = self.norm2(x)
         x = self.mlp(x)
+        # print("x shape in Block MLP:", x.shape)
         # feat = x  # 蒸馏位置3
         x = self.ls2(x)
         x = self.drop_path2(x)

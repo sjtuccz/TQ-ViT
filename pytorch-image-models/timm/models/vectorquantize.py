@@ -407,6 +407,8 @@ class FSQ_Qscale_deQscale(nn.Module):
         print(f"Using FSQ_trainableT, T init= {T}")
         self.compress = nn.Linear(channels_in, channels_dim)
         self.expand = nn.Linear(channels_dim, channels_in)
+        # self.compress = nn.Linear(channels_in, channels_dim, bias=False)
+        # self.expand = nn.Linear(channels_dim, channels_in, bias=False)
         assert len(levels) == channels_dim
         self.codebook_dim = len(levels)
         self.register_buffer("_levels", torch.tensor(levels, dtype=torch.int32))
@@ -423,6 +425,7 @@ class FSQ_Qscale_deQscale(nn.Module):
 
         self.codebook_meter = CodebookMeter(codebook_size=self.codebook_size.item())
         self.input_format = input_format  # 'nhc' or 'nch' or None
+        self.fold_dim = None  # to be set if needed
     def grad_scale(self, x, scale=1):
         y = x
         y_grad = x * scale
@@ -474,8 +477,144 @@ class FSQ_Qscale_deQscale(nn.Module):
                 z_q = z_q.transpose(1, 2).view(input.shape).contiguous()
             elif self.input_format == 'NHWC':
                 z_q = z_q.view(input.shape).contiguous()
-            # return z_q , quantization_error
-            return z_q , torch.tensor(0.0).cuda()
+            return z_q
+    
+    def indices_to_level_indices(self, indices):
+        """ Converts indices to indices at each level, perhaps needed for a transformer with factorized embeddings """
+        indices = rearrange(indices, '... -> ... 1')
+        codes_non_centered = (indices // self._basis) % self._levels
+        return codes_non_centered
+
+    def _scale_and_shift_inverse(self, zhat):
+        half_width = self._levels // 2
+        return (zhat - half_width) / half_width * self.anti_q
+
+    def _indices_to_codes(self, indices):
+        level_indices = self.indices_to_level_indices(indices)
+        codes = self._scale_and_shift_inverse(level_indices)
+        return codes
+    
+    def _scale_and_shift(self, zhat_normalized):
+        half_width = self._levels // 2
+        return (zhat_normalized * half_width / self.anti_q) + half_width
+    
+    def codes_to_indices(self, zhat):
+        """ Converts a `code` to an index in the codebook. """
+        assert zhat.shape[-1] == self.codebook_dim
+        zhat = self._scale_and_shift(zhat)
+        return (zhat * self._basis).sum(dim=-1).to(torch.int32)
+
+    def round_ste(self, z: torch.Tensor) ->  torch.Tensor:
+        """Round with straight through gradients."""
+        zhat = z.round()
+        return z + (zhat - z).detach() # STE
+
+    def round_rotation(self, z: torch.Tensor) ->  torch.Tensor:
+        """Round with straight through gradients."""
+        zhat = z.round()
+        return rotate_to(z, zhat)  # rotation trick
+
+    def bound(self, z, eps: float = 1e-3):
+        """ Bound `z`, an array of shape (..., d). """
+        half_l = ((self._levels - 1) * (1 + eps) / 2)
+        offset = torch.where(self._levels % 2 == 0, 0.5, 0.0).to(z.device)
+        shift = torch.atanh(offset / half_l)
+        z_bound = torch.tanh(z/self.get_scale() + shift) * half_l - offset
+        return z_bound
+    
+    def quantize(self, z):
+        # print("z shape :",z.shape)
+        """ Quantizes z, returns quantized zhat, same shape as z. """
+        quantized = self.round_ste(self.bound(z)).to(z.device)
+        # quantized = self.round_rotation(self.bound(z)).to(z.device)
+        half_width = (self._levels // 2).to(z.device)# Renormalize to [-T, T].
+        return quantized / half_width *self.anti_q
+class FSQ_Qscale_deQscale_test_dim(nn.Module):
+    '''
+    Based on vanilla FSQ, quantization scaling factor & dequantization scaling factor have been added.
+    '''
+    def __init__(self, channels_in, channels_dim, levels=[15,15,15], T=1, input_format='NLC'):
+        super().__init__()
+        print(f"Using FSQ_trainableT, T init= {T}")
+        self.compress = nn.Linear(channels_in, channels_dim)
+        self.expand = nn.Linear(channels_dim, channels_in)
+        assert len(levels) == channels_dim
+        self.codebook_dim = len(levels)
+        self.register_buffer("_levels", torch.tensor(levels, dtype=torch.int32))
+        self.register_buffer("codebook_size", torch.tensor(self._levels.prod(), dtype=torch.int32))
+        # self.T_raw = nn.Parameter(torch.tensor(T, dtype=torch.float32))
+        self.T_raw = nn.Parameter(torch.tensor([T for _ in range(self.codebook_dim)], dtype=torch.float32)) 
+        self.anti_q = nn.Parameter(torch.tensor([T for _ in range(self.codebook_dim)], dtype=torch.float32)) 
+        basis = torch.cumprod(
+                torch.tensor([1] + levels[:-1], dtype=torch.int32), 
+                dim=0
+            )
+        self.register_buffer("_basis", basis)
+        self.token_wise_rep = False
+
+        self.codebook_meter = CodebookMeter(codebook_size=self.codebook_size.item())
+        self.input_format = input_format  # 'nhc' or 'nch' or None
+        self.fold_dim = 'C'  # to be set automatically if input_format == 'NCHW'
+    def grad_scale(self, x, scale=1):
+        y = x
+        y_grad = x * scale
+        return (y - y_grad).detach() + y_grad
+    def get_scale(self):
+        return self.grad_scale(self.T_raw, scale=1)
+        # return self.grad_scale(self.T_raw, scale=10)
+    
+    def reparameterize(self):
+        print('using FSQ_trainableT reparameterize')
+        self.token_wise_rep = True
+        implicit_codebook = self._indices_to_codes(torch.arange(self.codebook_size).to(self.codebook_size.device))
+        expand_dict = self.expand(implicit_codebook)
+        expand_dict = expand_dict.transpose(1, 2).contiguous()
+        del self.expand
+        return expand_dict
+    
+    def forward(self, z):
+        '''
+        z: (b, h , channels_in)
+        '''
+        rand = random.random()
+        input = z
+        # if self.input_format == 'NCHW':
+        #     N, C, H, W = z.shape
+        #     if C <= H*W:
+        #         z = z.flatten(2).transpose(1, 2).contiguous() #->(N, L, C)
+        #     else:
+        #         z = z.flatten(2).contiguous()  # (N, C, H*W)
+        #         self.fold_dim = 'HW'
+        # elif self.input_format == 'NHWC':
+        #     z = z.flatten(1, 2)  # (N, H, W, C) -> (N, L, C)
+        # print("z shape :",z.shape)
+        z = z.transpose(1, 2).contiguous()
+        z = self.compress(z) # (b, h , dim)
+        codes = self.quantize(z) # range (-T,T)
+        quantization_error = torch.mean((z-codes.detach())**2)
+        if rand < 0.0005:
+            # analyze_tensor(input, name="input")
+            # analyze_tensor(z, name="compress")
+            # analyze_tensor(codes, name="codes")
+            indices = self.codes_to_indices(codes)
+            # self.codebook_meter.update(indices)
+            unique_index=torch.unique(indices)
+            num_feature = z.shape[0] * z.shape[1]
+            # print(f"NumFeature: {num_feature}, CodebookSize: {self.codebook_size}, QuantiError: {quantization_error}")
+            print(f"ActivatedCode:{unique_index.shape[0]}, NumFeature: {num_feature}, CodebookSize: {self.codebook_size}, QuantiError: {quantization_error}, T={self.get_scale().data} AQ={self.anti_q.data}")
+        
+        if not self.training and self.token_wise_rep:
+            indices = self.codes_to_indices(codes)
+            self.codebook_meter.update(indices)
+            return indices
+        else:
+            z_q = self.expand(codes)
+            # if self.input_format == 'NCHW':
+            #     z_q = z_q.transpose(1, 2).view(input.shape).contiguous()
+            # elif self.input_format == 'NHWC':
+            #     z_q = z_q.view(input.shape).contiguous()
+            z_q = z_q.transpose(1, 2).contiguous()
+            return z_q
     
     def indices_to_level_indices(self, indices):
         """ Converts indices to indices at each level, perhaps needed for a transformer with factorized embeddings """

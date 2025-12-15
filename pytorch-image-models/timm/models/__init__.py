@@ -34,6 +34,7 @@ from .inception_v4 import *
 from .levit import *
 from .maxxvit import *
 from .metaformer import *
+from .metaformer_tq import *
 from .mlp_mixer import *
 from .mobilenetv3 import *
 from .mobilevit import *

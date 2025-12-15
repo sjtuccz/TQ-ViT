@@ -983,7 +983,7 @@ class SwinTransformerStage(nn.Module):
         # build blocks
         blocks=[]
         for i in range(depth):
-            if i%2==0:
+            if i%2==1:
                 blocks.append(SwinTransformerBlock_VQ_ATTN(
                 dim=out_dim,
                 input_resolution=self.output_resolution,

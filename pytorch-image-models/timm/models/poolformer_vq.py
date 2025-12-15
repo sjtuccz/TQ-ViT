@@ -213,7 +213,7 @@ class PoolFormerBlock(nn.Module):
             x = x + self.drop_path(self.mlp(self.norm2(x)))
             feat2 = x
         # print(f'use layer scale: {self.use_layer_scale}, x shape: {x.shape}')
-        return x, (feat1, feat2)
+        return x
 
 class vq_PoolFormerBlock(nn.Module):
     """
@@ -297,36 +297,34 @@ class vq_PoolFormerBlock(nn.Module):
                 * self.token_mixer(self.norm1(x)))
             feat1 = x # for distillation
             x = self.norm2(x)
-            loss_dict=torch.tensor(0.0).cuda()
             if not self.training and self.token_wise_rep:
                 embedding_index =  self.vq(x)
                 z_q = self.rep_codebook(embedding_index)
                 x = z_q.transpose(1, 2).reshape(feat1.shape).contiguous()
-                return x+feat1, loss_dict
-            x , loss_dict= self.vq(x)
+                return x+feat1
+            x = self.vq(x)
             x = self.mlp(x)
             x = self.drop_path(
                 self.layer_scale_2.unsqueeze(-1).unsqueeze(-1)* x)
             x = x + feat1
 
-            return x, loss_dict, (feat1, x)# for distillation
+            return x
         else:
             x = x + self.drop_path(self.token_mixer(self.norm1(x)))
             feat1 = x # for distillation
             x = self.norm2(x)
-            loss_dict=torch.tensor(0.0).cuda()
             if not self.training and self.token_wise_rep:
                 embedding_index =  self.vq(x)
                 z_q = self.rep_codebook(embedding_index)
                 x = z_q.transpose(1, 2).reshape(feat1.shape)
-                return x+feat1, loss_dict
-            x , loss_dict= self.vq(x)
+                return x+feat1
+            x = self.vq(x)
             
             x = self.mlp(x)
             x = self.drop_path(x)
             x = x + feat1
 
-            return x, loss_dict, (feat1, x)# for distillation
+            return x# for distillation
 
 class MultiOutputSequential(nn.Sequential):
     '''A sequential container for modules with multiple outputs.'''    
@@ -374,8 +372,8 @@ def basic_blocks(dim, index, layers,
                 vq_type=vq_type, fsq_level = fsq_level,
                 dic_n=dic_n, dic_dim=dic_dim, fsq_Tinit=fsq_Tinit
                 ))
-    blocks = MultiOutputSequential(*blocks)
-    # blocks = nn.Sequential(*blocks)
+    # blocks = MultiOutputSequential(*blocks)
+    blocks = nn.Sequential(*blocks)
 
     return blocks
 
@@ -531,14 +529,16 @@ class vqPoolFormer(nn.Module):
             if isinstance(module, nn.Sequential):
                 for name, submodule in module.named_children():
                     print(f"    Found sub module: {submodule.__class__.__name__.lower()}")
-                    if submodule.__class__.__name__.lower().startswith('vq'):
+                    # if submodule.__class__.__name__.lower().startswith('vq'):
+                    if hasattr(submodule, 'reparameterize'):
                         print(f"        Found VQ module in Sequential: {submodule.__class__.__name__.lower()}")
                         submodule.reparameterize()
             else:
                 # 情况2：模块是直接的非Sequential（如Conv2d）
-                if module.__class__.__name__.lower().startswith('vq'):
+                # if module.__class__.__name__.lower().startswith('vq'):
+                if hasattr(module, 'reparameterize'):
                     # print(f"Found standalone VQ module: {module.__class__.__name__.lower()}")
-                    submodule.reparameterize()
+                    module.reparameterize()
     def get_classifier(self):
         return self.head
 
@@ -569,17 +569,13 @@ class vqPoolFormer(nn.Module):
         # input embedding
         x = self.patch_embed(x)
         # through backbone
-        quantize_loss_list = []
         for idx, block in enumerate(self.network):
             x = block(x)
-            if isinstance(x, tuple):
-                quantize_loss_list.extend(x[1])
+            if isinstance(x, tuple) or isinstance(x, list):
                 x = x[0]
         x = self.norm(x)
         cls_out = self.head(x.mean([-2, -1]))
         # for image classification
-        if quantize_loss_list:
-            return cls_out, torch.stack(quantize_loss_list).mean()
         return cls_out
     @torch.jit.ignore
     def print_codebook_utilization(self):

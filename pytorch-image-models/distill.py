@@ -3,46 +3,187 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class DKD(nn.Module):
-    def __init__(self, T=1.0, alpha=1.0, beta=1.0):
+    '''
+    Vanilla DKD has been modified to handle the situation where there are multiple labels in the target when Cutmix/Mixup are enabled.
+    '''
+    def __init__(self, T=1.0, alpha=1.0, beta=1.0, topk=None):
         super(DKD, self).__init__()
         print(f'using DKD divergence loss T={T} for logits distillation')
         self.alpha = alpha
         self.beta = beta
         self.temperature = T
-        # self.warmup = cfg.DKD.WARMUP
-        # self.logit_stand = cfg.EXPERIMENT.LOGIT_STAND
-        # self.trainer = cfg.SOLVER.TRAINER
-        # self.topk = cfg.SOLVER.DEEPKD.TOPK
+        self.topk = topk
+        print(f'DKD alpha: {self.alpha}, beta: {self.beta}, topk: {self.topk}')
 
     def forward(self, logits_student, logits_teacher, target):
-        # print(f'target: {target}, shape:{target.shape}')
         if target.dim() == 1:
             target = F.one_hot(target.long(), num_classes=1000).float()
-        gt_mask = _get_gt_mask(logits_student, target)
-        other_mask = _get_other_mask(logits_student, target)
+        gt_mask = self._get_gt_mask(target)
+        other_mask = self._get_other_mask(logits_student, target)
         pred_student = F.softmax(logits_student / self.temperature , dim=1)
         pred_teacher = F.softmax(logits_teacher / self.temperature , dim=1)
-        pred_student = cat_mask(pred_student, gt_mask, other_mask)
-        pred_teacher = cat_mask(pred_teacher, gt_mask, other_mask)
+        pred_student = self.cat_mask(pred_student, gt_mask, other_mask)
+        pred_teacher = self.cat_mask(pred_teacher, gt_mask, other_mask)
         log_pred_student = torch.log(pred_student)
         tckd_loss = (
             F.kl_div(log_pred_student, pred_teacher, reduction='sum')
             * (self.temperature **2)
             / target.shape[0]
         )
-        pred_teacher_part2 = F.softmax(
-            logits_teacher / self.temperature  - 1000.0 * gt_mask, dim=1
-        )
-        log_pred_student_part2 = F.log_softmax(
-            logits_student / self.temperature  - 1000.0 * gt_mask, dim=1
+        if self.topk is not None:
+            none_topk_mask = self._get_none_topk_mask(logits_teacher, gt_mask, top_k=self.topk)
+            pred_teacher_part2 = F.softmax(
+                logits_teacher / self.temperature  - 1000.0 * none_topk_mask, dim=1
+            )
+            log_pred_student_part2 = F.log_softmax(
+                logits_student / self.temperature  - 1000.0 * none_topk_mask, dim=1
+            )
+
+        else:
+            pred_teacher_part2 = F.softmax(
+                logits_teacher / self.temperature  - 1000.0 * gt_mask, dim=1
+            )
+            log_pred_student_part2 = F.log_softmax(
+                logits_student / self.temperature  - 1000.0 * gt_mask, dim=1
+            )
+        nckd_loss = (
+            F.kl_div(log_pred_student_part2, pred_teacher_part2, reduction='sum')
+            * (self.temperature **2)
+            / target.shape[0]
+        )   
+        return self.alpha * tckd_loss + self.beta * nckd_loss
+
+    def _get_gt_mask(self, target):
+        assert target.dim() == 2, "Target must be 2D (batch, seq_len)"
+        mask = (target != 0)
+        return mask
+
+    def _get_other_mask(self, logits, target):
+        mask = (target == 0)
+        return mask
+
+
+    def cat_mask(self,  t, mask1, mask2):
+        t1 = (t * mask1).sum(dim=1, keepdims=True)
+        t2 = (t * mask2).sum(1, keepdims=True)
+        rt = torch.cat([t1, t2], dim=1)
+        return rt
+    
+    def _get_none_topk_mask(self, logits, gt_mask, top_k=100):
+        # logits shape: (batch_size, num_classes)
+        # gt_mask is bool ,shape: (batch_size, num_classes)
+        _, top_indices = torch.topk(logits, k=min(top_k, logits.size(1)), dim=1)
+        mask = torch.ones_like(logits)
+        # topk indices set to 0
+        batch_indices = torch.arange(logits.size(0)).unsqueeze(1).expand_as(top_indices)
+        mask[batch_indices, top_indices] = 0
+        # target indices set to 1
+        mask[gt_mask] = 1
+        return mask # target & none_topk is 1, else 0
+
+class DKD_topk(nn.Module):
+    '''
+    Vanilla DKD has been modified to handle the situation where there are multiple labels in the target when Cutmix/Mixup are enabled.
+    '''
+    def __init__(self, T=1.0, alpha=1.0, beta=1.0, topk=None):
+        super(DKD_topk, self).__init__()
+        print(f'using DKD divergence loss T={T} for logits distillation')
+        self.alpha = alpha
+        self.beta = beta
+        self.temperature = T
+        self.topk = topk
+
+    def forward(self, logits_student, logits_teacher, target):
+        if target.dim() == 1:
+            target = F.one_hot(target.long(), num_classes=1000).float()
+        gt_mask = self._get_gt_mask(target)
+
+        if self.topk is not None:
+            other_mask = self._get_topk_mask(logits_teacher, gt_mask, top_k=self.topk)
+            pred_student = F.softmax(logits_student / self.temperature , dim=1)
+            pred_teacher = F.softmax(logits_teacher / self.temperature , dim=1)
+            pred_student = self.cat_mask(pred_student, gt_mask, other_mask)
+            pred_teacher = self.cat_mask(pred_teacher, gt_mask, other_mask)
+            log_pred_student = torch.log(pred_student)
+
+            none_topk_mask = self._get_none_topk_mask(logits_teacher, gt_mask, top_k=self.topk)
+            pred_teacher_part2 = F.softmax(
+                logits_teacher / self.temperature  - 1000.0 * none_topk_mask, dim=1
+            )
+            log_pred_student_part2 = F.log_softmax(
+                logits_student / self.temperature  - 1000.0 * none_topk_mask, dim=1
+            )
+
+        else:
+            other_mask = self._get_other_mask(logits_student, target)
+            pred_student = F.softmax(logits_student / self.temperature , dim=1)
+            pred_teacher = F.softmax(logits_teacher / self.temperature , dim=1)
+            pred_student = self.cat_mask(pred_student, gt_mask, other_mask)
+            pred_teacher = self.cat_mask(pred_teacher, gt_mask, other_mask)
+            log_pred_student = torch.log(pred_student)
+        
+            pred_teacher_part2 = F.softmax(
+                logits_teacher / self.temperature  - 1000.0 * gt_mask, dim=1
+            )
+            log_pred_student_part2 = F.log_softmax(
+                logits_student / self.temperature  - 1000.0 * gt_mask, dim=1
+            )
+
+        tckd_loss = (
+            F.kl_div(log_pred_student, pred_teacher, reduction='sum')
+            * (self.temperature **2)
+            / target.shape[0]
         )
         nckd_loss = (
             F.kl_div(log_pred_student_part2, pred_teacher_part2, reduction='sum')
             * (self.temperature **2)
             / target.shape[0]
-        )
+        )   
         return self.alpha * tckd_loss + self.beta * nckd_loss
 
+    def _get_gt_mask(self, target):
+        assert target.dim() == 2, "Target must be 2D (batch, seq_len)"
+        mask = (target != 0)
+        return mask
+
+    def _get_other_mask(self, logits, target):
+        mask = (target == 0)
+        return mask
+
+
+    def cat_mask(self,  t, mask1, mask2):
+        t1 = (t * mask1).sum(dim=1, keepdims=True)
+        t2 = (t * mask2).sum(1, keepdims=True)
+        rt = torch.cat([t1, t2], dim=1)
+        return rt
+    
+    def _get_none_topk_mask(self, logits, gt_mask, top_k=100):
+        # logits shape: (batch_size, num_classes)
+        # gt_mask is bool ,shape: (batch_size, num_classes)
+        _, top_indices = torch.topk(logits, k=min(top_k, logits.size(1)), dim=1)
+        mask = torch.ones_like(logits)
+        # topk indices set to 0
+        batch_indices = torch.arange(logits.size(0)).unsqueeze(1).expand_as(top_indices)
+        mask[batch_indices, top_indices] = 0
+        # target indices set to 1
+        mask[gt_mask] = 1
+        return mask # target & none_topk is 1, else 0
+    def _get_topk_mask(self, logits, gt_mask, top_k=100):
+        # logits shape: (batch_size, num_classes)
+        # gt_mask is bool ,shape: (batch_size, num_classes)
+        _, top_indices = torch.topk(logits, k=min(top_k, logits.size(1)), dim=1)
+        mask = torch.zeros_like(logits)
+        # topk indices set to 0
+        batch_indices = torch.arange(logits.size(0)).unsqueeze(1).expand_as(top_indices)
+        mask[batch_indices, top_indices] = 1
+        # target indices set to 1
+        mask[gt_mask] = 0
+        return mask # target & none_topk is 1, else 0
+
+
+     
+        
+        return mask.bool()
 
 class DistillKL(nn.Module):
     """Distilling the Knowledge in a Neural Network"""
@@ -220,27 +361,3 @@ class FeatureLossCosineKL(nn.Module):
             raise ValueError("Reduction must be 'mean' or 'sum'.")
         
 
-# def _get_gt_mask(logits, target):
-#     target = target.reshape(-1).long()
-#     mask = torch.zeros_like(logits).scatter_(1, target.unsqueeze(1), 1).bool()
-#     return mask
-def _get_gt_mask(logits, target):
-    assert target.dim() == 2, "Target must be 2D (batch, seq_len)"
-    mask = (target != 0)
-    return mask
-
-
-# def _get_other_mask(logits, target):
-#     target = target.reshape(-1)
-#     mask = torch.ones_like(logits).scatter_(1, target.unsqueeze(1), 0).bool()
-#     return mask
-def _get_other_mask(logits, target):
-    mask = (target == 0)
-    return mask
-
-
-def cat_mask(t, mask1, mask2):
-    t1 = (t * mask1).sum(dim=1, keepdims=True)
-    t2 = (t * mask2).sum(1, keepdims=True)
-    rt = torch.cat([t1, t2], dim=1)
-    return rt

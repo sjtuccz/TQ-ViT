@@ -1,36 +1,6 @@
 #!/usr/bin/env python3
 """ VQ-ViT Training Script
 Rewritten from the train.py script of the timm library
-
-for example:
-CUDA_VISIBLE_DEVICES=1 python trainvq.py -j 16 
---vqtype tfsq 
---dict-dim 4
---fsq-level 3 3 3 3
---Disfn DKD 
---klloss-weight 4.0 
---model vqvit_tiny_patch16_224 
---teacher-model vit_tiny_patch16_224 
---output  
---dataset imagenet1k 
---data-dir 
---initial-checkpoint  
---input-size 3 224 224  
---sched cosine  
---min-lr 1e-5 
---warmup-lr 1e-5 
---epochs 400 
---warmup-epochs 5 
---drop 0.0 
---amp 
---cooldown-epochs 10 
---clip-grad 600.0 
---T 1.0 
---scale 0.5 1.0  
---mixup 0.0 --cutmix 0.0 --smoothing 0.0 --drop-path 0.0 
--b 1024 --grad-accum-steps 4  
---lr 4e-4 --opt adamw --weight-decay 0.1 
---model-kwargs fsq_Tinit=-1
 """
 import argparse
 import logging
@@ -163,7 +133,7 @@ group.add_argument('--img-size', type=int, default=None, metavar='N',
                    help='Image size (default: None => model default)')
 group.add_argument('--in-chans', type=int, default=None, metavar='N',
                    help='Image input channels (default: None => 3)')
-group.add_argument('--input-size', default=None, nargs=3, type=int,
+group.add_argument('--input-size', default=[3,224,224], nargs=3, type=int,
                    metavar='N N N',
                    help='Input all image dimensions (d h w, e.g. --input-size 3 224 224), uses model default if empty')
 group.add_argument('--crop-pct', default=0.875, type=float,
@@ -211,9 +181,9 @@ group.add_argument('--opt-betas', default=None, type=float, nargs='+', metavar='
                    help='Optimizer Betas (default: None, use opt default)')
 group.add_argument('--momentum', type=float, default=0.9, metavar='M',
                    help='Optimizer momentum (default: 0.9)')
-group.add_argument('--weight-decay', type=float, default=5e-3,
+group.add_argument('--weight-decay', type=float, default=1e-6,
                    help='weight decay (default: 2e-5)')
-group.add_argument('--clip-grad', type=float, default=300, metavar='NORM',
+group.add_argument('--clip-grad', type=float, default=600, metavar='NORM',
                    help='Clip gradient norm (default: None, no clipping)')
 group.add_argument('--clip-mode', type=str, default='norm',
                    help='Gradient clipping mode. One of ("norm", "value", "agc")')
@@ -226,9 +196,13 @@ parser.add_argument('--T', type=float, default=1.0,
 parser.add_argument('--top-k', type=int, default=None,
                     help='top k for distillation cos sim loss')
 parser.add_argument('--celoss-weight', type=float, default=1.0, help='loss weight')
-parser.add_argument('--klloss-weight', type=float, default=4.0, help='kl loss weight')
+parser.add_argument('--klloss-weight', type=float, default=2.0, help='kl loss weight')
 parser.add_argument('--Disfn', default='DKD', type=str, metavar='DIStillLossFunc',
                     help='type of distillation loss func (default: KlDiv) One of ("CE", "KL", "")')
+parser.add_argument('--dkd-alpha', type=float, default=1.0, help='tckd loss weight')
+parser.add_argument('--dkd-beta', type=float, default=1.0, help='nckd loss weight')
+parser.add_argument('--dkd-topk', type=int, default=None, help='topk nckd loss weight')
+
 
 # Learning rate schedule parameters
 group = parser.add_argument_group('Learning rate schedule parameters')
@@ -262,9 +236,9 @@ group.add_argument('--lr-k-decay', type=float, default=1.0,
                    help='learning rate k-decay for cosine/poly (default: 1.0)')
 group.add_argument('--warmup-lr', type=float, default=1e-5, metavar='LR',
                    help='warmup learning rate (default: 1e-5)')
-group.add_argument('--min-lr', type=float, default=1e-5, metavar='LR',
+group.add_argument('--min-lr', type=float, default=1e-7, metavar='LR',
                    help='lower lr bound for cyclic schedulers that hit 0 (default: 0)')
-group.add_argument('--epochs', type=int, default=360, metavar='N',
+group.add_argument('--epochs', type=int, default=310, metavar='N',
                    help='number of epochs to train (default: 300)')
 group.add_argument('--epoch-repeats', type=float, default=0., metavar='N',
                    help='epoch repeat multiplier (number of times to repeat dataset epoch per train epoch).')
@@ -278,7 +252,7 @@ group.add_argument('--warmup-epochs', type=int, default=5, metavar='N',
                    help='epochs to warmup LR, if scheduler supports')
 group.add_argument('--warmup-prefix', action='store_true', default=False,
                    help='Exclude warmup period from decay schedule.'),
-group.add_argument('--cooldown-epochs', type=int, default=0, metavar='N',
+group.add_argument('--cooldown-epochs', type=int, default=5, metavar='N',
                    help='epochs to cooldown LR at min_lr, after cyclic schedule ends')
 group.add_argument('--patience-epochs', type=int, default=10, metavar='N',
                    help='patience epochs for Plateau LR scheduler (default: 10)')
@@ -289,7 +263,7 @@ group.add_argument('--decay-rate', '--dr', type=float, default=0.1, metavar='RAT
 group = parser.add_argument_group('Augmentation and regularization parameters')
 group.add_argument('--no-aug', action='store_true', default=False,
                    help='Disable all training augmentation, override other train aug args')
-group.add_argument('--scale', type=float, nargs='+', default=[0.75, 1.0], metavar='PCT',
+group.add_argument('--scale', type=float, nargs='+', default=[0.7, 1.0], metavar='PCT',
                    help='Random resize scale (default: 0.75 1.0 , 0.75 only for cifar & tinyImagenet)')
 group.add_argument('--ratio', type=float, nargs='+', default=[3. / 4., 4. / 3.], metavar='RATIO',
                    help='Random resize aspect ratio (default: 0.75 1.33)')
@@ -319,9 +293,9 @@ group.add_argument('--recount', type=int, default=1,
                    help='Random erase count (default: 1)')
 group.add_argument('--resplit', action='store_true', default=False,
                    help='Do not random erase first (clean) augmentation split')
-group.add_argument('--mixup', type=float, default=1.0,
+group.add_argument('--mixup', type=float, default=0.0,
                    help='mixup alpha, mixup enabled if > 0. (default: 0.)')
-group.add_argument('--cutmix', type=float, default=1.0,
+group.add_argument('--cutmix', type=float, default=0.0,
                    help='cutmix alpha, cutmix enabled if > 0. (default: 0.)')
 group.add_argument('--cutmix-minmax', type=float, nargs='+', default=None,
                    help='cutmix min/max ratio, overrides alpha and enables cutmix if set (default: None)')
@@ -334,7 +308,7 @@ group.add_argument('--mixup-mode', type=str, default='batch',
 group.add_argument('--mixup-off-epoch', default=0, type=int, metavar='N',
                    help='Turn off mixup after this epoch, disabled if 0 (default: 0)')
 group.add_argument('--smoothing', type=float, default=0.0,
-                   help='Label smoothing (default: 0.1)')
+                   help='Label smoothing (default: 0.0)')
 group.add_argument('--train-interpolation', type=str, default='random',
                    help='Training interpolation (random, bilinear, bicubic default: "random")')
 group.add_argument('--drop', type=float, default=0.0, metavar='PCT',
@@ -839,9 +813,9 @@ def main():
     elif args.Disfn=='klandcos':
         kl_criterion =  DistillKLandCosSim(args.T).to(device=device)
     elif args.Disfn=='DKD':
-        # kl_criterion = DKD(args.T, alpha=0.2, beta=1.8).to(device=device)
-        kl_criterion = DKD(args.T, alpha=0.5, beta=1.5).to(device=device)
-    else:   
+        # kl_criterion = DKD(args.T, alpha=args.dkd_alpha, beta=args.dkd_beta, topk=args.dkd_topk).to(device=device)
+        kl_criterion = DKD_topk(args.T, alpha=args.dkd_alpha, beta=args.dkd_beta, topk=args.dkd_topk).to(device=device)
+    else:
         kl_criterion =  DistillKL(args.T).to(device=device)
         
 
@@ -1073,7 +1047,7 @@ def train_one_epoch(
                 loss = loss_fn(output, target) * args.celoss_weight
                 if not kl_criterion:
                     loss_kl = torch.tensor(0.0).to(device)
-                elif isinstance(kl_criterion, DKD):
+                elif isinstance(kl_criterion, DKD) or isinstance(kl_criterion, DKD_topk):
                     loss_kl =  kl_criterion(output, teacher_output.detach(), target) * args.klloss_weight
                 else:
                     loss_kl =  kl_criterion(output, teacher_output.detach()) * args.klloss_weight
