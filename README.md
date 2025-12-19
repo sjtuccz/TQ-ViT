@@ -31,7 +31,7 @@ Environments:
 Please note that for large models such as tqvit_base or above, when training on ImageNet-1k, please enable Cutmix\Mixup and droppath.
 
 ```sh
-CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.run --nproc_per_node=2 --master_port=29577 trainvqvit.py -j 16 --vqtype TQ --dict-dim 4 --fsq-level 3 3 3 3 --model vqvit_base_patch16_224 --teacher-model vit_base_patch16_224 --output ../output/tqvit --dataset imagenet1k --initial-checkpoint ./pretrained_weights/vit_base_patch16_224.augreg_in21k_ft_in1k.pth  --amp -b 900 --grad-accum-steps 2 --lr 8e-4 --mean 0.5 0.5 0.5 --std 0.5 0.5 0.5 --data-dir /path/imagenet1k
+CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.run --nproc_per_node=2 --master_port=29577 trainvqvit.py -j 16 --tqtype TQ --dict-dim 4 --fsq-level 3 3 3 3 --model vqvit_base_patch16_224 --teacher-model vit_base_patch16_224 --output ../output/tqvit --dataset imagenet1k --initial-checkpoint ./pretrained_weights/vit_base_patch16_224.augreg_in21k_ft_in1k.pth  --amp -b 900 --grad-accum-steps 2 --lr 8e-4 --mean 0.5 0.5 0.5 --std 0.5 0.5 0.5 --data-dir /path/imagenet1k
 ```
 
 ## Test

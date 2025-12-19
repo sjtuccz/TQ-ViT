@@ -2,28 +2,28 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import random
-from einops import rearrange, repeat, reduce, pack, unpack
+from einops import rearrange, pack, unpack
 
 from timm.layers import trunc_normal_
 
 
-def choose_vq(vq_type, dic_n, dim, dic_dim, fsq_level=[3,3,3,3], fsq_Tinit=1, input_format='NLC'):
-    if vq_type == 'vq':
+def choose_vq(tq_type, dic_n, dim, dic_dim, fsq_level=[3,3,3,3], fsq_Tinit=1, input_format='NLC'):
+    if tq_type == 'vq':
             return VectorQuantizer(n_e=dic_n, channels_in=dim, channels_dim=dic_dim)
-    elif vq_type == 'fsq_qde':
+    elif tq_type == 'fsq_qde':
         return FSQ_Qscale_deQscale_equal(channels_in=dim, channels_dim=dic_dim, levels=fsq_level, T=fsq_Tinit)
-    elif vq_type == 'fsq':
+    elif tq_type == 'fsq':
         return FSQ(channels_in=dim, channels_dim=dic_dim, levels=fsq_level)
-    elif vq_type == 'fsq_q':
+    elif tq_type == 'fsq_q':
         return FSQ_Qscale(channels_in=dim, channels_dim=dic_dim, levels=fsq_level, T=fsq_Tinit)
-    # elif vq_type == 'tfsqs':
+    # elif tq_type == 'tfsqs':
     #     return FSQ_trainableT_scale(channels_in=dim, channels_dim=dic_dim, levels=fsq_level, T=fsq_Tinit)
-    elif vq_type == 'fsq_qd':
+    elif tq_type == 'fsq_qd' or tq_type == 'TQ':
         return FSQ_Qscale_deQscale(channels_in=dim, channels_dim=dic_dim, levels=fsq_level, T=fsq_Tinit, input_format=input_format)
-    elif vq_type == 'bottleneck': # for ablation study
+    elif tq_type == 'bottleneck': # for ablation study
         return Bottleneck(channels_in=dim, channels_dim=dic_dim)
     else:
-        raise RuntimeError('vq type not implemented')
+        raise RuntimeError('tq type not implemented')
 
 class FSQ(nn.Module):
     """
@@ -407,8 +407,6 @@ class FSQ_Qscale_deQscale(nn.Module):
         print(f"Using FSQ_trainableT, T init= {T}")
         self.compress = nn.Linear(channels_in, channels_dim)
         self.expand = nn.Linear(channels_dim, channels_in)
-        # self.compress = nn.Linear(channels_in, channels_dim, bias=False)
-        # self.expand = nn.Linear(channels_dim, channels_in, bias=False)
         assert len(levels) == channels_dim
         self.codebook_dim = len(levels)
         self.register_buffer("_levels", torch.tensor(levels, dtype=torch.int32))
@@ -451,7 +449,7 @@ class FSQ_Qscale_deQscale(nn.Module):
         if self.input_format == 'NCHW':
             z = z.flatten(2).transpose(1, 2).contiguous() #->(N, L, C)
         elif self.input_format == 'NHWC':
-            z = z.flatten(1, 2)  # (N, H, W, C) -> (N, L, C)
+            z = z.flatten(1, 2).contiguous()  # (N, H, W, C) -> (N, L, C)
         # print("z shape :",z.shape)
         z = self.compress(z) # (b, h , dim)
         codes = self.quantize(z) # range (-T,T)
@@ -474,14 +472,14 @@ class FSQ_Qscale_deQscale(nn.Module):
         else:
             z_q = self.expand(codes)
             if self.input_format == 'NCHW':
-                z_q = z_q.transpose(1, 2).view(input.shape).contiguous()
+                z_q = z_q.transpose(1, 2).contiguous().view(input.shape).contiguous()
             elif self.input_format == 'NHWC':
                 z_q = z_q.view(input.shape).contiguous()
             return z_q
     
     def indices_to_level_indices(self, indices):
         """ Converts indices to indices at each level, perhaps needed for a transformer with factorized embeddings """
-        indices = rearrange(indices, '... -> ... 1')
+        indices = rearrange(indices, '... -> ... 1').contiguous()
         codes_non_centered = (indices // self._basis) % self._levels
         return codes_non_centered
 
@@ -618,7 +616,7 @@ class FSQ_Qscale_deQscale_test_dim(nn.Module):
     
     def indices_to_level_indices(self, indices):
         """ Converts indices to indices at each level, perhaps needed for a transformer with factorized embeddings """
-        indices = rearrange(indices, '... -> ... 1')
+        indices = rearrange(indices, '... -> ... 1').contiguous()
         codes_non_centered = (indices // self._basis) % self._levels
         return codes_non_centered
 

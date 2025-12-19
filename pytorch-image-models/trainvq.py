@@ -4,7 +4,7 @@ Rewritten from the train.py script of the timm library
 
 for example:
 CUDA_VISIBLE_DEVICES=1 python trainvq.py -j 16 
---vqtype tfsq 
+--tqtype tfsq 
 --dict-dim 4
 --fsq-level 3 3 3 3
 --FLfn cos 
@@ -130,8 +130,8 @@ group = parser.add_argument_group('Model parameters')
 group.add_argument('--model', default='vit_small_patch32_224', type=str, metavar='MODEL',
                    help='Name of model to train (default: "resnet50")')
 
-group.add_argument('--vqtype', default='tfsq', type=str, metavar='VQ',
-                   help='vqtype: vq or fsq')
+group.add_argument('--tqtype', default='tfsq', type=str, metavar='VQ',
+                   help='tqtype: vq or fsq')
 group.add_argument('--fsq-level', type=int, nargs='+', default=[3,3,3,3], metavar='FSQLEVEL',
                    help='fsq level')
 
@@ -617,7 +617,7 @@ def main():
         # strict=True,
         strict=False,
         dic_n=args.dict_num, dic_dim=args.dict_dim,
-        vq_type=args.vqtype,
+        tq_type=args.tqtype,
         fsq_level=args.fsq_level,
         **args.model_kwargs,
     )
@@ -1200,9 +1200,9 @@ def train_one_epoch(
             if teacher_model:
                 with torch.no_grad():
                     teacher_output, init_feat_list = teacher_model(input,init_codebook_feat=True)
-            if args.vqtype == 'vq' and args.kmeans_init_code:
+            if args.tqtype == 'vq' and args.kmeans_init_code:
                 init_codebook(model,init_feat_list)
-            elif args.vqtype == 'fsq' and args.init_fsqt:
+            elif args.tqtype == 'fsq' and args.init_fsqt:
                 init_fsqt(model,init_feat_list)
             break
 

@@ -101,7 +101,7 @@ class vq_attn_Attention(nn.Module):
             proj_drop=0.,
             norm_layer=nn.LayerNorm,
 
-            vq_type='fsq_qd',
+            tq_type='fsq_qd',
             fsq_level = [3,3,3,3],
             dic_n=None, dic_dim=3, fsq_Tinit=1
     ):
@@ -120,8 +120,8 @@ class vq_attn_Attention(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop)
 
         self.token_wise_rep = False
-        self.vq_qkv = choose_vq(vq_type=vq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit)
-        self.vq_proj = choose_vq(vq_type=vq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit)
+        self.vq_qkv = choose_vq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit)
+        self.vq_proj = choose_vq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit)
     def reparameterize(self):
         '''
         fixed_codebook: codebook->norm
@@ -199,7 +199,7 @@ class vq_attn_Attention_proj(nn.Module):
             proj_drop=0.,
             norm_layer=nn.LayerNorm,
 
-            vq_type='fsq_qd',
+            tq_type='fsq_qd',
             fsq_level = [3,3,3,3],
             dic_n=None, dic_dim=3, fsq_Tinit=1
     ):
@@ -218,7 +218,7 @@ class vq_attn_Attention_proj(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop)
 
         self.token_wise_rep = False
-        self.vq_proj = choose_vq(vq_type=vq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit)
+        self.vq_proj = choose_vq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit)
     def reparameterize(self):
         '''
         fixed_codebook: codebook->norm
@@ -267,7 +267,7 @@ class vq_attn_Attention_qkv(nn.Module):
             proj_drop=0.,
             norm_layer=nn.LayerNorm,
 
-            vq_type='fsq_qd',
+            tq_type='fsq_qd',
             fsq_level = [3,3,3,3],
             dic_n=None, dic_dim=3, fsq_Tinit=1
     ):
@@ -286,7 +286,7 @@ class vq_attn_Attention_qkv(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop)
 
         self.token_wise_rep = False
-        self.vq_qkv = choose_vq(vq_type=vq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit)
+        self.vq_qkv = choose_vq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit)
     def reparameterize(self):
         '''
         fixed_codebook: codebook->norm
@@ -367,7 +367,7 @@ class vq_ffn_Block(nn.Module):
             mlp_layer=Mlp,
             dic_n=1024, dic_dim=4,
             index=0,
-            vq_type='vq',
+            tq_type='vq',
             fsq_level = [3,3,3,3],
             fsq_Tmax = 10,
             fsq_Tinit=1,
@@ -387,7 +387,7 @@ class vq_ffn_Block(nn.Module):
         )
         self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
         self.drop_path1 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-        self.vq = choose_vq(vq_type=vq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit)
+        self.vq = choose_vq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit)
         self.norm2 = norm_layer(dim)
         self.mlp = mlp_layer(
             in_features=dim,
@@ -459,7 +459,7 @@ class vq_attn_Block(nn.Module):
             mlp_layer=Mlp,
             dic_n=1024, dic_dim=8,
             index=0,
-            vq_type='vq',
+            tq_type='vq',
             fsq_level = [7,7,7,7],
             fsq_Tmax = 10,
             fsq_Tinit=1
@@ -475,7 +475,7 @@ class vq_attn_Block(nn.Module):
             proj_drop=proj_drop,
             norm_layer=norm_layer,
             # 暂时固定值
-            vq_type=vq_type,
+            tq_type=tq_type,
             # fsq_level = [3,5,3,5],
             fsq_level = fsq_level,
             dic_n=1000, dic_dim=len(fsq_level),
@@ -624,7 +624,7 @@ class vqVisionTransformer(nn.Module):
             act_layer: Optional[LayerType] = None,
             block_fn: Type[nn.Module] = None,
             mlp_layer: Type[nn.Module] = Mlp,
-            dic_n=None, dic_dim=4, vq_type='fsq_qd', fsq_level=[3,3,3,3], fsq_Tinit=1
+            dic_n=None, dic_dim=4, tq_type='fsq_qd', fsq_level=[3,3,3,3], fsq_Tinit=1
     ):
         """
         Args:
@@ -719,7 +719,7 @@ class vqVisionTransformer(nn.Module):
         #         mlp_layer=mlp_layer,
         #         dic_n=dic_n, dic_dim=dic_dim,
         #         index=i,
-        #         vq_type=vq_type,
+        #         tq_type=tq_type,
         #         fsq_level = fsq_level,
         #           fsq_Tinit=fsq_Tinit
         #     ) for i in range(depth)]
@@ -756,7 +756,7 @@ class vqVisionTransformer(nn.Module):
         #         mlp_layer=mlp_layer,
         #         dic_n=dic_n, dic_dim=dic_dim,
         #         index=i,
-        #         vq_type=vq_type,
+        #         tq_type=tq_type,
         #         fsq_level = fsq_level,
         #           fsq_Tinit=fsq_Tinit
         #     ))
@@ -778,7 +778,7 @@ class vqVisionTransformer(nn.Module):
                 mlp_layer=mlp_layer,
                 dic_n=dic_n, dic_dim=dic_dim,
                 index=i,
-                vq_type=vq_type,
+                tq_type=tq_type,
                 fsq_level = fsq_level,
                   fsq_Tinit=fsq_Tinit
             ) )
@@ -798,7 +798,7 @@ class vqVisionTransformer(nn.Module):
                 mlp_layer=mlp_layer,
                 dic_n=dic_n, dic_dim=dic_dim,
                 index=i,
-                vq_type=vq_type,
+                tq_type=tq_type,
                 fsq_level = fsq_level,
                   fsq_Tinit=fsq_Tinit
             ))
@@ -836,7 +836,7 @@ class vqVisionTransformer(nn.Module):
         #         mlp_layer=mlp_layer,
         #         dic_n=dic_n, dic_dim=dic_dim,
         #         index=i,
-        #         vq_type=vq_type,
+        #         tq_type=tq_type,
         #         fsq_level = fsq_level,
         #           fsq_Tinit=fsq_Tinit
         #     ))

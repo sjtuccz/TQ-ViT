@@ -319,8 +319,8 @@ def validate(args):
         else:
             raise NotImplementedError("Please implement flops calculation function for swin model")
     flops, params = clever_format([flops, params], "%.3f")
-
-    if 'vq' in args.model:
+    average_util = 0.0
+    if any(keyword in args.model for keyword in ('vq', 'tq', 'TQ', 'VQ')):
         average_util = model.print_codebook_utilization()
     results = OrderedDict(
         model=args.model,
@@ -330,7 +330,7 @@ def validate(args):
         crop_pct=crop_pct,
         interpolation=data_config['interpolation'],
         params_thop=params,
-        codebook_utilization = f"{average_util:.2%}" if 'vq' in args.model else 'N/A'
+        codebook_utilization = f"{average_util:.2%}" if average_util else 'N/A'
     )
 
     return results

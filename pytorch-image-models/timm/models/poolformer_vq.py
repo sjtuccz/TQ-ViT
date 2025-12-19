@@ -234,7 +234,7 @@ class vq_PoolFormerBlock(nn.Module):
                  drop=0., drop_path=0., 
                  use_layer_scale=True, layer_scale_init_value=1e-5, 
                  
-                vq_type='fsq_qd',fsq_level = [3,3,3,3],
+                tq_type='fsq_qd',fsq_level = [3,3,3,3],
                 dic_n=None, dic_dim=4, fsq_Tinit=1):
 
         super().__init__()
@@ -255,7 +255,7 @@ class vq_PoolFormerBlock(nn.Module):
                 layer_scale_init_value * torch.ones((dim)), requires_grad=True)
             self.layer_scale_2 = nn.Parameter(
                 layer_scale_init_value * torch.ones((dim)), requires_grad=True)
-        self.vq = choose_vq(vq_type=vq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit, input_format='NCHW')
+        self.vq = choose_vq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit, input_format='NCHW')
         self.token_wise_rep = False
         self.dim = dim
     def reparameterize(self):
@@ -343,7 +343,7 @@ def basic_blocks(dim, index, layers,
                  drop_rate=.0, drop_path_rate=0., 
                  use_layer_scale=True, layer_scale_init_value=1e-5,
                  
-                 vq_type='fsq_qd',fsq_level = [3,3,3,3],
+                 tq_type='fsq_qd',fsq_level = [3,3,3,3],
                 dic_n=None, dic_dim=4, fsq_Tinit=1):
     """
     generate PoolFormer blocks for a stage
@@ -369,7 +369,7 @@ def basic_blocks(dim, index, layers,
                 use_layer_scale=use_layer_scale, 
                 layer_scale_init_value=layer_scale_init_value, 
 
-                vq_type=vq_type, fsq_level = fsq_level,
+                tq_type=tq_type, fsq_level = fsq_level,
                 dic_n=dic_n, dic_dim=dic_dim, fsq_Tinit=fsq_Tinit
                 ))
     # blocks = MultiOutputSequential(*blocks)
@@ -408,7 +408,7 @@ class vqPoolFormer(nn.Module):
                  init_cfg=None, 
                  pretrained=None, 
 
-                 vq_type='fsq_qd',fsq_level = [3,3,3,3],
+                 tq_type='fsq_qd',fsq_level = [3,3,3,3],
                 dic_n=None, dic_dim=4, fsq_Tinit=1,
                  **kwargs):
 
@@ -433,7 +433,7 @@ class vqPoolFormer(nn.Module):
                                  use_layer_scale=use_layer_scale, 
                                  layer_scale_init_value=layer_scale_init_value,
                                  
-                                 vq_type=vq_type,fsq_level = fsq_level,
+                                 tq_type=tq_type,fsq_level = fsq_level,
                                 dic_n=dic_n, dic_dim=dic_dim, fsq_Tinit=fsq_Tinit
                                  )
             network.append(stage)

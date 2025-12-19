@@ -215,7 +215,7 @@ class vqWindowAttention(nn.Module):
             attn_drop: float = 0.,
             proj_drop: float = 0.,
 
-            vq_type='fsq_qd',
+            tq_type='fsq_qd',
             fsq_level = [3,3,3,3],
             dic_n=None, dic_dim=3, fsq_Tinit=1
     ):
@@ -258,8 +258,8 @@ class vqWindowAttention(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
 
         self.token_wise_rep = False
-        self.qkv_vq = choose_vq(vq_type=vq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit)
-        self.proj_vq = choose_vq(vq_type=vq_type, dic_n=dic_n, dim=attn_dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit)
+        self.qkv_vq = choose_vq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit)
+        self.proj_vq = choose_vq(tq_type=tq_type, dic_n=dic_n, dim=attn_dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit)
         self.attn_dim = attn_dim
     def _get_rel_pos_bias(self) -> torch.Tensor:
         relative_position_bias = self.relative_position_bias_table[
@@ -536,7 +536,7 @@ class SwinTransformerBlock_VQ_ATTN(nn.Module):
             act_layer: Callable = nn.GELU,
             norm_layer: Callable = nn.LayerNorm,
 
-            vq_type='fsq_qd',
+            tq_type='fsq_qd',
             fsq_level = [3,3,3,3],
             dic_n=None, dic_dim=3, fsq_Tinit=1
     ):
@@ -584,7 +584,7 @@ class SwinTransformerBlock_VQ_ATTN(nn.Module):
             attn_drop=attn_drop,
             proj_drop=proj_drop,
 
-            vq_type=vq_type,
+            tq_type=tq_type,
             fsq_level = fsq_level,
             dic_n=dic_n, dic_dim=dic_dim, fsq_Tinit=fsq_Tinit
         )
@@ -716,7 +716,7 @@ class SwinTransformerBlock_VQ_FFN(nn.Module):
             act_layer: Callable = nn.GELU,
             norm_layer: Callable = nn.LayerNorm,
 
-            vq_type='fsq_qd',fsq_level = [3,3,3,3],
+            tq_type='fsq_qd',fsq_level = [3,3,3,3],
             dic_n=None, dic_dim=4, fsq_Tinit=1
     ):
         """
@@ -765,7 +765,7 @@ class SwinTransformerBlock_VQ_FFN(nn.Module):
         )
         self.drop_path2 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
-        self.vq = choose_vq(vq_type=vq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit)
+        self.vq = choose_vq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit)
         self.token_wise_rep = False
         if any(self.shift_size):
             # calculate attention mask for SW-MSA
@@ -941,7 +941,7 @@ class SwinTransformerStage(nn.Module):
             drop_path: Union[List[float], float] = 0.,
             norm_layer: Callable = nn.LayerNorm,
 
-            vq_type='fsq_qd',fsq_level = [3,3,3,3],
+            tq_type='fsq_qd',fsq_level = [3,3,3,3],
             dic_n=None, dic_dim=4, fsq_Tinit=1
     ):
         """
@@ -998,7 +998,7 @@ class SwinTransformerStage(nn.Module):
                 drop_path=drop_path[i] if isinstance(drop_path, list) else drop_path,
                 norm_layer=norm_layer,
 
-                vq_type=vq_type, fsq_level = fsq_level,
+                tq_type=tq_type, fsq_level = fsq_level,
                 dic_n=dic_n, dic_dim=dic_dim, fsq_Tinit=fsq_Tinit
             ))
             else:
@@ -1015,7 +1015,7 @@ class SwinTransformerStage(nn.Module):
                 attn_drop=attn_drop,
                 drop_path=drop_path[i] if isinstance(drop_path, list) else drop_path,
                 norm_layer=norm_layer,
-                vq_type=vq_type, fsq_level = fsq_level,
+                tq_type=tq_type, fsq_level = fsq_level,
                 dic_n=dic_n, dic_dim=dic_dim, fsq_Tinit=fsq_Tinit
             ))
         self.blocks = nn.Sequential(*blocks)
@@ -1067,7 +1067,7 @@ class vqSwinTransformer(nn.Module):
             norm_layer: Union[str, Callable] = nn.LayerNorm,
             weight_init: str = '',
 
-            vq_type='fsq_qd',fsq_level = [3,3,3,3],
+            tq_type='fsq_qd',fsq_level = [3,3,3,3],
             dic_n=None, dic_dim=4, fsq_Tinit=1,
             **kwargs,
     ):
@@ -1148,7 +1148,7 @@ class vqSwinTransformer(nn.Module):
                 drop_path=dpr[i],
                 norm_layer=norm_layer,
 
-                vq_type=vq_type, fsq_level = fsq_level,
+                tq_type=tq_type, fsq_level = fsq_level,
                 dic_n=dic_n, dic_dim=dic_dim, fsq_Tinit=fsq_Tinit
             )]
             in_dim = out_dim

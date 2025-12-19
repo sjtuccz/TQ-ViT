@@ -7,16 +7,16 @@ from einops import rearrange, repeat, reduce, pack, unpack
 from timm.layers import trunc_normal_
 
 
-def choose_vq(vq_type, dic_n, dim, dic_dim, fsq_level=[3,3,3,3], fsq_Tinit=1):
-    if vq_type == 'vq':
+def choose_vq(tq_type, dic_n, dim, dic_dim, fsq_level=[3,3,3,3], fsq_Tinit=1):
+    if tq_type == 'vq':
             return VectorQuantizer(n_e=dic_n, channels_in=dim, channels_dim=dic_dim)
-    elif vq_type == 'tfsq':
+    elif tq_type == 'tfsq':
         return FSQ_trainableT(channels_in=dim, channels_dim=dic_dim, levels=fsq_level, T=fsq_Tinit)
-    elif vq_type == 'fsq':
+    elif tq_type == 'fsq':
         return FSQ(channels_in=dim, channels_dim=dic_dim, levels=fsq_level)
-    elif vq_type == 'tfsqs':
+    elif tq_type == 'tfsqs':
         return FSQ_trainableT_scale(channels_in=dim, channels_dim=dic_dim, levels=fsq_level, T=fsq_Tinit)
-    elif vq_type == 'bottleneck': # for ablation study
+    elif tq_type == 'bottleneck': # for ablation study
         return Bottleneck(channels_in=dim, channels_dim=dic_dim)
     else:
         raise RuntimeError('vq type not implemented')

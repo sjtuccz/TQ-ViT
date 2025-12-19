@@ -39,7 +39,7 @@ class vq_attn_Attention(nn.Module):
             proj_drop=0.,
             norm_layer=nn.LayerNorm,
 
-            vq_type='vq',
+            tq_type='vq',
             fsq_level = [7,7,7,7],
             dic_n=1000, dic_dim=4, index=0,fsq_Tmax = 10, fsq_Tinit=-1
     ):
@@ -58,13 +58,13 @@ class vq_attn_Attention(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop)
 
         self.is_pre_cal = False
-        if vq_type == 'vq':
+        if tq_type == 'vq':
             self.vq = VectorQuantizer(dic_n, dim, dic_dim, index)
-        elif vq_type == 'tfsq':
+        elif tq_type == 'tfsq':
             # self.vq = FSQ_AdaptiveQuant(dic_n, dim, dic_dim, levels=fsq_level)
             self.vq = FSQ_trainableT(dic_n, dim, dic_dim, index, levels=fsq_level, T=fsq_Tinit, T_max=fsq_Tmax)
             # self.vq = FSQ_GumbelSoftmax(dic_n, dim, dic_dim, levels=fsq_level)
-        elif vq_type == 'fsq':
+        elif tq_type == 'fsq':
             self.vq = FSQ_T(dic_n, dim, dic_dim, index, levels=fsq_level, T=1)
     def reparameterize(self, vq_embedding):
         '''
@@ -148,7 +148,7 @@ class VQMSA(nn.Module):
             mlp_layer=Mlp,
             dic_n=1024, dic_dim=8,
             index=0,
-            vq_type='vq',
+            tq_type='vq',
             fsq_level = [7,7,7,7],
             fsq_Tmax = 10,
             fsq_Tinit=-1
@@ -164,7 +164,7 @@ class VQMSA(nn.Module):
             proj_drop=proj_drop,
             norm_layer=norm_layer,
             # 暂时固定值
-            vq_type=vq_type,
+            tq_type=tq_type,
             fsq_level = fsq_level,
             dic_n=1000, dic_dim=len(fsq_level), index=index,
             fsq_Tmax = fsq_Tmax,
@@ -179,12 +179,12 @@ class VQMSA(nn.Module):
         self.is_pre_cal = False
         self.dict_n = dic_n
         self.dim = dim
-        if vq_type == 'vq':
+        if tq_type == 'vq':
             self.vq = VectorQuantizer(dic_n, dim, dic_dim, index)
-        elif vq_type == 'tfsq':
+        elif tq_type == 'tfsq':
             print(f'using FSQ_trainableT in attn,  levels={fsq_level}')
             self.vq = FSQ_trainableT(dic_n, dim, dic_dim, index, levels=fsq_level, T=fsq_Tinit,T_max=fsq_Tmax)
-        elif vq_type == 'fsq':
+        elif tq_type == 'fsq':
             self.vq = FSQ_T(dic_n, dim, dic_dim, index, levels=fsq_level, T=1)
     def reparameterize(self):
         print('using Block reparameterize')
@@ -432,19 +432,19 @@ class vq_ffn_Block(nn.Module):
             mlp_layer=Mlp,
             dic_n=1024, dic_dim=4,
             index=0,
-            vq_type='tfsq',
+            tq_type='tfsq',
             fsq_level = [3,3,3,3],
             fsq_Tmax = 10,
             fsq_Tinit=-1
     ):
         super().__init__()
-        if vq_type == 'vq':
+        if tq_type == 'vq':
             print(f'using vq, codebook: {dic_n, dic_dim}')
             self.vq = VectorQuantizer(dic_n, dim, dic_dim, index)
-        elif vq_type == 'tfsq':
+        elif tq_type == 'tfsq':
             print(f'using FSQ_trainableT, levels={fsq_level}')
             self.vq = FSQ_trainableT(dic_n, dim, dic_dim, index, levels=fsq_level, T=fsq_Tinit,T_max=fsq_Tmax )
-        elif vq_type == 'fsq':
+        elif tq_type == 'fsq':
             self.vq = FSQ_T(dic_n, dim, dic_dim, index, levels=fsq_level, T=1)
         
         self.norm2 = norm_layer(dim)
@@ -501,7 +501,7 @@ if __name__ == '__main__':
     #         attn_drop=0.,
     #         proj_drop=0.,
     #         norm_layer=nn.LayerNorm,
-    #         vq_type='tfsq',
+    #         tq_type='tfsq',
     #         fsq_level = [3,3,3,3],
     #         dic_n=1000, dic_dim=4, index=0,fsq_Tmax = 10, fsq_Tinit=-1)
     # msa = MSA(dim=384,

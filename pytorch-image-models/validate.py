@@ -425,7 +425,8 @@ def validate(args):
         top1a, top5a = real_labels.get_accuracy(k=1), real_labels.get_accuracy(k=5)
     else:
         top1a, top5a = top1.avg, top5.avg
-    if 'vq' in args.model:
+    average_util = 0.0
+    if any(keyword in args.model for keyword in ('vq', 'tq', 'TQ', 'VQ')):
         average_util = model.print_codebook_utilization()
     from thop import profile, clever_format
     
@@ -459,7 +460,7 @@ def validate(args):
         interpolation=data_config['interpolation'],
         params_thop=params,
         average_batchtime = f'{batch_time.avg:.3f}s, {input.size(0) / batch_time.avg:>7.2f}/s, FPS={1/(batch_time.avg/args.batch_size):.1f}',
-        codebook_utilization = f"{average_util:.2%}" if 'vq' in args.model else 'N/A'
+        codebook_utilization = f"{average_util:.2%}" if average_util else 'N/A'
     )
     
     # from torchstat import stat

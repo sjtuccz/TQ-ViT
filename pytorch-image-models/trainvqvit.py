@@ -102,8 +102,8 @@ group = parser.add_argument_group('Model parameters')
 group.add_argument('--model', default='vit_small_patch32_224', type=str, metavar='MODEL',
                    help='Name of model to train (default: "resnet50")')
 
-group.add_argument('--vqtype', default='fsq_qd', type=str, metavar='VQ',
-                   help='vqtype')
+group.add_argument('--tqtype', default='fsq_qd', type=str, metavar='VQ',
+                   help='tqtype')
 group.add_argument('--fsq-level', type=int, nargs='+', default=[3,3,3,3], metavar='FSQLEVEL',
                    help='fsq level')
 
@@ -191,18 +191,18 @@ group.add_argument('--layer-decay', type=float, default=None,
                    help='layer-wise learning rate decay (default: None)')
 group.add_argument('--opt-kwargs', nargs='*', default={}, action=utils.ParseKwargs)
 # loss
-parser.add_argument('--T', type=float, default=1.0,
-                    help='knowledge distillation loss temperature')
 parser.add_argument('--top-k', type=int, default=None,
                     help='top k for distillation cos sim loss')
+# The currently optimal training KD hyperparameters that we have explored
 parser.add_argument('--celoss-weight', type=float, default=1.0, help='loss weight')
-parser.add_argument('--klloss-weight', type=float, default=2.0, help='kl loss weight')
-parser.add_argument('--Disfn', default='DKD', type=str, metavar='DIStillLossFunc',
+parser.add_argument('--kdtype', default='DKD', type=str, metavar='DIStillLossFunc',
                     help='type of distillation loss func (default: KlDiv) One of ("CE", "KL", "")')
+parser.add_argument('--kdloss-weight', type=float, default=2.0, help='Logits knowledge distillation loss weight')
 parser.add_argument('--dkd-alpha', type=float, default=1.0, help='tckd loss weight')
 parser.add_argument('--dkd-beta', type=float, default=1.0, help='nckd loss weight')
 parser.add_argument('--dkd-topk', type=int, default=None, help='topk nckd loss weight')
-
+parser.add_argument('--T', type=float, default=1.0,
+                    help='knowledge distillation loss temperature')
 
 # Learning rate schedule parameters
 group = parser.add_argument_group('Learning rate schedule parameters')
@@ -504,14 +504,14 @@ def main():
         # strict=True,
         strict=False,
         dic_dim=args.dict_dim,
-        vq_type=args.vqtype,
+        tq_type=args.tqtype,
         fsq_level=args.fsq_level,
         **args.model_kwargs,
     )
 
     init_teacher_checkpoint = (args.teacher_checkpoint or args.initial_checkpoint) if not args.teacher_pretrained else None
     teacher_model = None
-    if args.klloss_weight and args.teacher_model:
+    if args.kdloss_weight and args.teacher_model:
         teacher_model = create_teacher_model(
             model_name = args.teacher_model,
             num_classes=args.num_classes,
@@ -804,15 +804,15 @@ def main():
         train_loss_fn = nn.CrossEntropyLoss()
     train_loss_fn = train_loss_fn.to(device=device)
     validate_loss_fn = nn.CrossEntropyLoss().to(device=device)
-    if args.klloss_weight==0.0:
+    if args.kdloss_weight==0.0:
         kl_criterion =  None
-    elif args.Disfn=='CE':
+    elif args.kdtype=='CE':
         kl_criterion =  DistillCE().to(device=device)
-    elif args.Disfn=='cos':
+    elif args.kdtype=='cos':
         kl_criterion =  DistillCosSim(args.top_k).to(device=device)
-    elif args.Disfn=='klandcos':
+    elif args.kdtype=='klandcos':
         kl_criterion =  DistillKLandCosSim(args.T).to(device=device)
-    elif args.Disfn=='DKD':
+    elif args.kdtype=='DKD':
         # kl_criterion = DKD(args.T, alpha=args.dkd_alpha, beta=args.dkd_beta, topk=args.dkd_topk).to(device=device)
         kl_criterion = DKD_topk(args.T, alpha=args.dkd_alpha, beta=args.dkd_beta, topk=args.dkd_topk).to(device=device)
     else:
@@ -1048,9 +1048,9 @@ def train_one_epoch(
                 if not kl_criterion:
                     loss_kl = torch.tensor(0.0).to(device)
                 elif isinstance(kl_criterion, DKD) or isinstance(kl_criterion, DKD_topk):
-                    loss_kl =  kl_criterion(output, teacher_output.detach(), target) * args.klloss_weight
+                    loss_kl =  kl_criterion(output, teacher_output.detach(), target) * args.kdloss_weight
                 else:
-                    loss_kl =  kl_criterion(output, teacher_output.detach()) * args.klloss_weight
+                    loss_kl =  kl_criterion(output, teacher_output.detach()) * args.kdloss_weight
                 sum_loss = [loss ,loss_kl]
             return sum_loss
 
