@@ -42,7 +42,7 @@ from timm.layers import trunc_normal_, DropPath, SelectAdaptivePool2d, GroupNorm
 from ._builder import build_model_with_cfg
 from ._manipulate import checkpoint_seq
 from ._registry import generate_default_cfgs, register_model
-from timm.models.vectorquantize import choose_vq
+from timm.models.vectorquantize import choose_tq
 
 __all__ = ['TQ_MetaFormer']
 
@@ -116,7 +116,7 @@ class Scale(nn.Module):
         self.scale = nn.Parameter(init_value * torch.ones(dim), requires_grad=trainable)
 
     def forward(self, x):
-        return x * self.scale.view(self.shape).contiguous()
+        return x * self.scale.reshape(self.shape)
 
 
 class SquaredReLU(nn.Module):
@@ -193,7 +193,7 @@ class Attention(nn.Module):
 
     def forward(self, x):
         B, N, C = x.shape
-        qkv = self.qkv(x).contiguous().view(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4).contiguous()
+        qkv = self.qkv(x).view(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4).contiguous()
         q, k, v = qkv.unbind(0)
 
         if self.fused_attn:
@@ -202,12 +202,12 @@ class Attention(nn.Module):
                 dropout_p=self.attn_drop.p if self.training else 0.,
             )
         else:
-            attn = (q @ k.transpose(-2, -1).contiguous()).contiguous() * self.scale
+            attn = (q @ k.transpose(-2, -1)).contiguous() * self.scale
             attn = attn.softmax(dim=-1)
             attn = self.attn_drop(attn)
             x = attn @ v
 
-        x = x.transpose(1, 2).contiguous().view(B, N, C)
+        x = x.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
@@ -393,8 +393,8 @@ class TQ_MetaFormerBlock_TQ_FFN(nn.Module):
             layer_scale_init_value=None,
             res_scale_init_value=None,
 
-            tq_type='fsq_qd',fsq_level = [3,3,3,3],
-            dic_n=None, dic_dim=4, fsq_Tinit=1,
+            tq_type='tq_qd',tq_level = [3,3,3,3],
+            dic_n=None, dic_dim=4, tq_Tinit=1,
 
             **kwargs
     ):
@@ -420,13 +420,13 @@ class TQ_MetaFormerBlock_TQ_FFN(nn.Module):
         self.drop_path2 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.layer_scale2 = ls_layer() if layer_scale_init_value is not None else nn.Identity()
         self.res_scale2 = rs_layer() if res_scale_init_value is not None else nn.Identity()
-        self.tq = choose_vq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit, input_format='NCHW' if use_nchw else'NCL')
+        self.tq = choose_tq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, tq_level=tq_level, tq_Tinit=tq_Tinit, input_format='NCHW' if use_nchw else'NCL')
         self.token_wise_rep = False
         self.dim = dim
         self.use_nchw = use_nchw
     def reparameterize(self):
         ''' 
-        reparameterize the vq dict and calculate the rep_codebook for inference, 
+        reparameterize the tq dict and calculate the rep_codebook for inference, 
         the case where the codebook is not a square matrix has also been taken into consideration. 
         '''
         print('using Block reparameterize')
@@ -445,10 +445,10 @@ class TQ_MetaFormerBlock_TQ_FFN(nn.Module):
                 x_padded = torch.cat([fixed_codebook_transposed, torch.zeros(D, pad_size, device=fixed_codebook_transposed.device)], dim=1)
             else:
                 x_padded = fixed_codebook_transposed
-            fixed_codebook_rep = x_padded.contiguous().view(1, D,h,w) # (1, D, h, w)
+            fixed_codebook_rep = x_padded.reshape(1, D,h,w) # (1, D, h, w)
             x = self.mlp(fixed_codebook_rep)
             x = self.layer_scale2(x)
-            x = x.contiguous().view(D, -1) # (D, h*w)
+            x = x.reshape(D, -1) # (D, h*w)
             if h * w > N:
                 x = x[:, :N].contiguous() # (D, N)
             x = x.transpose(0, 1).contiguous() # (N, D)
@@ -473,7 +473,7 @@ class TQ_MetaFormerBlock_TQ_FFN(nn.Module):
             embedding_index =  self.tq(x)
             z_q = self.rep_codebook(embedding_index)
             if self.use_nchw:
-                x = z_q.transpose(1, 2).contiguous().view(res.shape)
+                x = z_q.transpose(1, 2).reshape(res.shape)
             else:
                 x = z_q
             return x+res
@@ -501,8 +501,8 @@ class TQ_MetaFormerStage(nn.Module):
             layer_scale_init_value=None,
             res_scale_init_value=None,
 
-            tq_type='fsq_qd',fsq_level = [3,3,3,3],
-            dic_n=None, dic_dim=4, fsq_Tinit=1,
+            tq_type='tq_qd',tq_level = [3,3,3,3],
+            dic_n=None, dic_dim=4, tq_Tinit=1,
 
             start_tq_ffn_index=0,
 
@@ -544,8 +544,8 @@ class TQ_MetaFormerStage(nn.Module):
                     res_scale_init_value=res_scale_init_value,
                     use_nchw=self.use_nchw,
 
-                    tq_type=tq_type, fsq_level = fsq_level,
-                    dic_n=dic_n, dic_dim=dic_dim, fsq_Tinit=fsq_Tinit,
+                    tq_type=tq_type, tq_level = tq_level,
+                    dic_n=dic_n, dic_dim=dic_dim, tq_Tinit=tq_Tinit,
 
                     **kwargs,
                 ))
@@ -576,7 +576,7 @@ class TQ_MetaFormerStage(nn.Module):
         B, C, H, W = x.shape
 
         if not self.use_nchw:
-            x = x.contiguous().view(B, C, -1).transpose(1, 2).contiguous()
+            x = x.view(B, C, -1).transpose(1, 2).contiguous()
 
         if self.grad_checkpointing and not torch.jit.is_scripting():
             x = checkpoint_seq(self.blocks, x)
@@ -584,7 +584,7 @@ class TQ_MetaFormerStage(nn.Module):
             x = self.blocks(x)
 
         if not self.use_nchw:
-            x = x.transpose(1, 2).contiguous().view(B, C, H, W)
+            x = x.transpose(1, 2).reshape(B, C, H, W)
 
         return x
     def reparameterize(self):
@@ -639,8 +639,8 @@ class TQ_MetaFormer(nn.Module):
             output_norm=LayerNorm2d,
             use_mlp_head=True,
 
-            tq_type='fsq_qd',fsq_level = [3,3,3,3],
-            dic_n=None, dic_dim=4, fsq_Tinit=1,
+            tq_type='tq_qd',tq_level = [3,3,3,3],
+            dic_n=None, dic_dim=4, tq_Tinit=1,
 
             start_tq_ffn_index=0,
             **kwargs,
@@ -694,8 +694,8 @@ class TQ_MetaFormer(nn.Module):
                 downsample_norm=downsample_norm,
                 norm_layer=norm_layers[i],
 
-                tq_type=tq_type, fsq_level = fsq_level,
-                dic_n=dic_n, dic_dim=dic_dim, fsq_Tinit=fsq_Tinit,
+                tq_type=tq_type, tq_level = tq_level,
+                dic_n=dic_n, dic_dim=dic_dim, tq_Tinit=tq_Tinit,
 
                 start_tq_ffn_index=start_tq_ffn_index,
                 **kwargs,
@@ -781,7 +781,7 @@ class TQ_MetaFormer(nn.Module):
                 for name, submodule in module.named_children():
                     print(f"    Found sub module: {submodule.__class__.__name__.lower()}")
                     if hasattr(submodule, 'reparameterize'):
-                        print(f"        Found VQ module in Sequential: {submodule.__class__.__name__.lower()}")
+                        print(f"        Found TQ module in Sequential: {submodule.__class__.__name__.lower()}")
                         submodule.reparameterize()
             else:
                 if hasattr(module, 'reparameterize'):
@@ -793,8 +793,8 @@ class TQ_MetaFormer(nn.Module):
         found_modules = []  # 用于记录找到的模块及其路径
         # 递归遍历所有子模块
         for module_name, module in self.named_modules():
-            # 检查模块是否是 VQ 实例（根据您的类名调整条件）
-            # 例如，如果您的VQ类名为 VectorQuantizer：
+            # 检查模块是否是 TQ 实例（根据您的类名调整条件）
+            # 例如，如果您的TQ类名为 VectorQuantizer：
             if hasattr(module, 'codebook_meter'): # 或者使用 isinstance(module, VectorQuantizer)
                 utilization = module.codebook_meter.utilization # 注意：这里是属性，不是方法调用
                 print(f'TQ  Module [{module_name}] Codebook Utilization: {utilization * 100:.2f}%')
@@ -803,9 +803,9 @@ class TQ_MetaFormer(nn.Module):
                 count += 1
         if count > 0:
             average_util = sum_util / count
-            print(f'Average VQ Codebook Utilization (across {count} modules): {average_util*100:.2f}%')
+            print(f'Average TQ Codebook Utilization (across {count} modules): {average_util*100:.2f}%')
         else:
-            print('No VQ modules with codebook meters found.')
+            print('No TQ modules with codebook meters found.')
         return average_util
 # this works but it's long and breaks backwards compatability with weights from the tq_poolformer-only impl
 def checkpoint_filter_fn(state_dict, model):
@@ -1037,6 +1037,7 @@ def tq_poolformer_s12(pretrained=False, **kwargs) -> TQ_MetaFormer:
         layer_scale_init_values=1e-5,
         res_scale_init_values=None,
         use_mlp_head=False,
+        start_tq_ffn_index=1,
         **kwargs)
     return _create_tq_metaformer('tq_poolformer_s12', pretrained=pretrained, **model_kwargs)
 
@@ -1053,6 +1054,7 @@ def tq_poolformer_s24(pretrained=False, **kwargs) -> TQ_MetaFormer:
         layer_scale_init_values=1e-5,
         res_scale_init_values=None,
         use_mlp_head=False,
+        start_tq_ffn_index=1,
         **kwargs)
     return _create_tq_metaformer('tq_poolformer_s24', pretrained=pretrained, **model_kwargs)
 
@@ -1069,6 +1071,7 @@ def tq_poolformer_s36(pretrained=False, **kwargs) -> TQ_MetaFormer:
         layer_scale_init_values=1e-6,
         res_scale_init_values=None,
         use_mlp_head=False,
+        start_tq_ffn_index=1,
         **kwargs)
     return _create_tq_metaformer('tq_poolformer_s36', pretrained=pretrained, **model_kwargs)
 
@@ -1085,6 +1088,7 @@ def tq_poolformer_m36(pretrained=False, **kwargs) -> TQ_MetaFormer:
         layer_scale_init_values=1e-6,
         res_scale_init_values=None,
         use_mlp_head=False,
+        start_tq_ffn_index=1,
         **kwargs)
     return _create_tq_metaformer('tq_poolformer_m36', pretrained=pretrained, **model_kwargs)
 
@@ -1101,6 +1105,7 @@ def tq_poolformer_m48(pretrained=False, **kwargs) -> TQ_MetaFormer:
         layer_scale_init_values=1e-6,
         res_scale_init_values=None,
         use_mlp_head=False,
+        start_tq_ffn_index=1,
         **kwargs)
     return _create_tq_metaformer('tq_poolformer_m48', pretrained=pretrained, **model_kwargs)
 
@@ -1124,6 +1129,7 @@ def tq_poolformerv2_s24(pretrained=False, **kwargs) -> TQ_MetaFormer:
         dims=[64, 128, 320, 512],
         norm_layers=GroupNorm1NoBias,
         use_mlp_head=False,
+        start_tq_ffn_index=1,
         **kwargs)
     return _create_tq_metaformer('tq_poolformerv2_s24', pretrained=pretrained, **model_kwargs)
 
@@ -1147,6 +1153,7 @@ def tq_poolformerv2_m36(pretrained=False, **kwargs) -> TQ_MetaFormer:
         dims=[96, 192, 384, 768],
         norm_layers=GroupNorm1NoBias,
         use_mlp_head=False,
+        start_tq_ffn_index=1,
         **kwargs)
     return _create_tq_metaformer('tq_poolformerv2_m36', pretrained=pretrained, **model_kwargs)
 

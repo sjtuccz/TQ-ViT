@@ -36,7 +36,7 @@ from timm.data import create_dataset, create_loader, resolve_data_config, Mixup,
 from timm.layers import convert_splitbn_model, convert_sync_batchnorm, set_fast_norm
 from timm.loss import JsdCrossEntropy, SoftTargetCrossEntropy, BinaryCrossEntropy, LabelSmoothingCrossEntropy
 from timm.models import create_model,safe_model_name, resume_checkpoint, load_checkpoint, model_parameters
-from timm.optim import create_optimizer_v2, optimizer_kwargs, param_group_fn_with_weight_decay, param_group_fn_with_weight_decay_vq
+from timm.optim import create_optimizer_v2, optimizer_kwargs, param_group_fn_with_weight_decay, param_group_fn_with_weight_decay_tq
 from timm.scheduler import create_scheduler_v2, scheduler_kwargs
 from timm.utils import ApexScaler, NativeScaler
 from timm.data.constants import CIFAR10_MEAN, CIFAR10_STD, CIFAR100_TRAIN_MEAN, CIFAR100_TRAIN_STD, TINY_IMAGENET_MEAN, TINY_IMAGENET_STD,IMAGENET_DEFAULT_MEAN,IMAGENET_DEFAULT_STD
@@ -107,10 +107,10 @@ group.add_argument('--class-map', default='', type=str, metavar='FILENAME',
 group = parser.add_argument_group('Model parameters')
 group.add_argument('--model', default='resnet50', type=str, metavar='MODEL',
                    help='Name of model to train (default: "resnet50")')
-parser.add_argument('--dict-num', default=256, type=int, metavar='vqvit_dict',
-                    help='vqvit dict size')
-parser.add_argument('--dict-dim', default=2, type=int, metavar='vqvit_dict_dim',
-                    help='vqvit dict dim')
+parser.add_argument('--dict-num', default=256, type=int, metavar='tqvit_dict',
+                    help='tqvit dict size')
+parser.add_argument('--dict-dim', default=2, type=int, metavar='tqvit_dict_dim',
+                    help='tqvit dict dim')
 
 group.add_argument('--pretrained', action='store_true', default=False,
                    help='Start with pretrained version of specified network (if avail)')
@@ -581,7 +581,7 @@ def main():
         print('using pretrained finetune, In addition to the head layer, the rest of the layers loaded with pre-training weights use a smaller learning rate, If lr_decay==0, freeze the pre-training layer')
         optimizer = create_optimizer_v2(
             model,
-            param_group_fn=param_group_fn_with_weight_decay_vq,
+            param_group_fn=param_group_fn_with_weight_decay_tq,
             **optimizer_kwargs(cfg=args),
             **args.opt_kwargs,
         )

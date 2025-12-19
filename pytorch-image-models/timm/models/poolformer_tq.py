@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Vector Quantized PoolFormer implementation
+Vector Quantized TQ_PoolFormer implementation
 """
 import os
 import copy
@@ -23,7 +23,7 @@ from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from timm.models.layers import DropPath, trunc_normal_
 from timm.models.registry import register_model
 from timm.layers.helpers import to_2tuple
-from timm.models.vectorquantize import choose_vq
+from timm.models.vectorquantize import choose_tq
 
 try:
     from mmseg.models.builder import BACKBONES as seg_BACKBONES
@@ -56,8 +56,8 @@ def _cfg(url='', **kwargs):
 
 
 default_cfgs = {
-    'poolformer_s': _cfg(crop_pct=0.9),
-    'poolformer_m': _cfg(crop_pct=0.95),
+    'tq_poolformer_s': _cfg(crop_pct=0.9),
+    'tq_poolformer_m': _cfg(crop_pct=0.95),
 }
 from einops import rearrange, repeat, reduce, pack, unpack
 import random
@@ -116,7 +116,7 @@ class GroupNorm(nn.GroupNorm):
 
 class Pooling(nn.Module):
     """
-    Implementation of pooling for PoolFormer
+    Implementation of pooling for TQ_PoolFormer
     --pool_size: pooling size
     """
     def __init__(self, pool_size=3):
@@ -159,9 +159,9 @@ class Mlp(nn.Module):
         return x
 
 
-class PoolFormerBlock(nn.Module):
+class TQ_PoolFormerBlock(nn.Module):
     """
-    Implementation of one PoolFormer block.
+    Implementation of one TQ_PoolFormer block.
     --dim: embedding dim
     --pool_size: pooling size
     --mlp_ratio: mlp expansion ratio
@@ -187,7 +187,7 @@ class PoolFormerBlock(nn.Module):
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, 
                        act_layer=act_layer, drop=drop)
 
-        # The following two techniques are useful to train deep PoolFormers.
+        # The following two techniques are useful to train deep TQ_PoolFormers.
         self.drop_path = DropPath(drop_path) if drop_path > 0. \
             else nn.Identity()
         self.use_layer_scale = use_layer_scale
@@ -215,9 +215,9 @@ class PoolFormerBlock(nn.Module):
         # print(f'use layer scale: {self.use_layer_scale}, x shape: {x.shape}')
         return x
 
-class vq_PoolFormerBlock(nn.Module):
+class tq_TQ_PoolFormerBlock(nn.Module):
     """
-    Implementation of one PoolFormer block.
+    Implementation of one TQ_PoolFormer block.
     --dim: embedding dim
     --pool_size: pooling size
     --mlp_ratio: mlp expansion ratio
@@ -234,8 +234,8 @@ class vq_PoolFormerBlock(nn.Module):
                  drop=0., drop_path=0., 
                  use_layer_scale=True, layer_scale_init_value=1e-5, 
                  
-                tq_type='fsq_qd',fsq_level = [3,3,3,3],
-                dic_n=None, dic_dim=4, fsq_Tinit=1):
+                tq_type='tq_qd',tq_level = [3,3,3,3],
+                dic_n=None, dic_dim=4, tq_Tinit=1):
 
         super().__init__()
 
@@ -246,7 +246,7 @@ class vq_PoolFormerBlock(nn.Module):
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, 
                        act_layer=act_layer, drop=drop)
 
-        # The following two techniques are useful to train deep PoolFormers.
+        # The following two techniques are useful to train deep TQ_PoolFormers.
         self.drop_path = DropPath(drop_path) if drop_path > 0. \
             else nn.Identity()
         self.use_layer_scale = use_layer_scale
@@ -255,19 +255,19 @@ class vq_PoolFormerBlock(nn.Module):
                 layer_scale_init_value * torch.ones((dim)), requires_grad=True)
             self.layer_scale_2 = nn.Parameter(
                 layer_scale_init_value * torch.ones((dim)), requires_grad=True)
-        self.vq = choose_vq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit, input_format='NCHW')
+        self.tq = choose_tq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, tq_level=tq_level, tq_Tinit=tq_Tinit, input_format='NCHW')
         self.token_wise_rep = False
         self.dim = dim
     def reparameterize(self):
         ''' 
-        reparameterize the vq dict and calculate the rep_codebook for inference, 
+        reparameterize the tq dict and calculate the rep_codebook for inference, 
         the case where the codebook is not a square matrix has also been taken into consideration. 
         '''
         print('using Block reparameterize')
         self.token_wise_rep = True
-        self.rep_codebook = nn.Embedding(self.vq.codebook_size, self.dim)
+        self.rep_codebook = nn.Embedding(self.tq.codebook_size, self.dim)
         # print(self.dim)
-        fixed_codebook = self.vq.reparameterize() # (codebook size, dim)
+        fixed_codebook = self.tq.reparameterize() # (codebook size, dim)
         N, D = fixed_codebook.shape[0], fixed_codebook.shape[1]
         fixed_codebook_transposed = fixed_codebook.transpose(0, 1).contiguous() # N, D -> D, N
         # handle the case where N is not a perfect square number for Conv
@@ -298,11 +298,11 @@ class vq_PoolFormerBlock(nn.Module):
             feat1 = x # for distillation
             x = self.norm2(x)
             if not self.training and self.token_wise_rep:
-                embedding_index =  self.vq(x)
+                embedding_index =  self.tq(x)
                 z_q = self.rep_codebook(embedding_index)
                 x = z_q.transpose(1, 2).reshape(feat1.shape).contiguous()
                 return x+feat1
-            x = self.vq(x)
+            x = self.tq(x)
             x = self.mlp(x)
             x = self.drop_path(
                 self.layer_scale_2.unsqueeze(-1).unsqueeze(-1)* x)
@@ -314,11 +314,11 @@ class vq_PoolFormerBlock(nn.Module):
             feat1 = x # for distillation
             x = self.norm2(x)
             if not self.training and self.token_wise_rep:
-                embedding_index =  self.vq(x)
+                embedding_index =  self.tq(x)
                 z_q = self.rep_codebook(embedding_index)
                 x = z_q.transpose(1, 2).reshape(feat1.shape)
                 return x+feat1
-            x = self.vq(x)
+            x = self.tq(x)
             
             x = self.mlp(x)
             x = self.drop_path(x)
@@ -343,18 +343,18 @@ def basic_blocks(dim, index, layers,
                  drop_rate=.0, drop_path_rate=0., 
                  use_layer_scale=True, layer_scale_init_value=1e-5,
                  
-                 tq_type='fsq_qd',fsq_level = [3,3,3,3],
-                dic_n=None, dic_dim=4, fsq_Tinit=1):
+                 tq_type='tq_qd',tq_level = [3,3,3,3],
+                dic_n=None, dic_dim=4, tq_Tinit=1):
     """
-    generate PoolFormer blocks for a stage
-    return: PoolFormer blocks 
+    generate TQ_PoolFormer blocks for a stage
+    return: TQ_PoolFormer blocks 
     """
     blocks = []
     for block_idx in range(layers[index]):
         block_dpr = drop_path_rate * (
             block_idx + sum(layers[:index])) / (sum(layers) - 1)
         if block_idx%2==0:
-            blocks.append(PoolFormerBlock(
+            blocks.append(TQ_PoolFormerBlock(
                 dim, pool_size=pool_size, mlp_ratio=mlp_ratio, 
                 act_layer=act_layer, norm_layer=norm_layer, 
                 drop=drop_rate, drop_path=block_dpr, 
@@ -362,15 +362,15 @@ def basic_blocks(dim, index, layers,
                 layer_scale_init_value=layer_scale_init_value, 
                 ))
         else:
-            blocks.append(vq_PoolFormerBlock(
+            blocks.append(tq_TQ_PoolFormerBlock(
                 dim, pool_size=pool_size, mlp_ratio=mlp_ratio, 
                 act_layer=act_layer, norm_layer=norm_layer, 
                 drop=drop_rate, drop_path=block_dpr, 
                 use_layer_scale=use_layer_scale, 
                 layer_scale_init_value=layer_scale_init_value, 
 
-                tq_type=tq_type, fsq_level = fsq_level,
-                dic_n=dic_n, dic_dim=dic_dim, fsq_Tinit=fsq_Tinit
+                tq_type=tq_type, tq_level = tq_level,
+                dic_n=dic_n, dic_dim=dic_dim, tq_Tinit=tq_Tinit
                 ))
     # blocks = MultiOutputSequential(*blocks)
     blocks = nn.Sequential(*blocks)
@@ -378,9 +378,9 @@ def basic_blocks(dim, index, layers,
     return blocks
 
 
-class vqPoolFormer(nn.Module):
+class TQ_PoolFormer(nn.Module):
     """
-    PoolFormer, the main class of our model
+    TQ_PoolFormer, the main class of our model
     --layers: [x,x,x,x], number of blocks for the 4 stages
     --embed_dims, --mlp_ratios, --pool_size: the embedding dims, mlp ratios and 
         pooling size for the 4 stages
@@ -408,8 +408,8 @@ class vqPoolFormer(nn.Module):
                  init_cfg=None, 
                  pretrained=None, 
 
-                 tq_type='fsq_qd',fsq_level = [3,3,3,3],
-                dic_n=None, dic_dim=4, fsq_Tinit=1,
+                 tq_type='tq_qd',tq_level = [3,3,3,3],
+                dic_n=None, dic_dim=4, tq_Tinit=1,
                  **kwargs):
 
         super().__init__()
@@ -433,8 +433,8 @@ class vqPoolFormer(nn.Module):
                                  use_layer_scale=use_layer_scale, 
                                  layer_scale_init_value=layer_scale_init_value,
                                  
-                                 tq_type=tq_type,fsq_level = fsq_level,
-                                dic_n=dic_n, dic_dim=dic_dim, fsq_Tinit=fsq_Tinit
+                                 tq_type=tq_type,tq_level = tq_level,
+                                dic_n=dic_n, dic_dim=dic_dim, tq_Tinit=tq_Tinit
                                  )
             network.append(stage)
             if i >= len(layers) - 1:
@@ -529,15 +529,15 @@ class vqPoolFormer(nn.Module):
             if isinstance(module, nn.Sequential):
                 for name, submodule in module.named_children():
                     print(f"    Found sub module: {submodule.__class__.__name__.lower()}")
-                    # if submodule.__class__.__name__.lower().startswith('vq'):
+                    # if submodule.__class__.__name__.lower().startswith('tq'):
                     if hasattr(submodule, 'reparameterize'):
-                        print(f"        Found VQ module in Sequential: {submodule.__class__.__name__.lower()}")
+                        print(f"        Found TQ module in Sequential: {submodule.__class__.__name__.lower()}")
                         submodule.reparameterize()
             else:
                 # 情况2：模块是直接的非Sequential（如Conv2d）
-                # if module.__class__.__name__.lower().startswith('vq'):
+                # if module.__class__.__name__.lower().startswith('tq'):
                 if hasattr(module, 'reparameterize'):
-                    # print(f"Found standalone VQ module: {module.__class__.__name__.lower()}")
+                    # print(f"Found standalone TQ module: {module.__class__.__name__.lower()}")
                     module.reparameterize()
     def get_classifier(self):
         return self.head
@@ -585,34 +585,34 @@ class vqPoolFormer(nn.Module):
         found_modules = []  # 用于记录找到的模块及其路径
         # 递归遍历所有子模块
         for module_name, module in self.named_modules():
-            # 检查模块是否是 VQ 实例（根据您的类名调整条件）
-            # 例如，如果您的VQ类名为 VectorQuantizer：
+            # 检查模块是否是 TQ 实例（根据您的类名调整条件）
+            # 例如，如果您的TQ类名为 VectorQuantizer：
             if hasattr(module, 'codebook_meter'): # 或者使用 isinstance(module, VectorQuantizer)
                 utilization = module.codebook_meter.utilization # 注意：这里是属性，不是方法调用
-                print(f'VQ Module [{module_name}] Codebook Utilization: {utilization * 100:.2f}%')
+                print(f'TQ Module [{module_name}] Codebook Utilization: {utilization * 100:.2f}%')
                 found_modules.append(module_name)
                 sum_util += utilization
                 count += 1
         if count > 0:
             average_util = sum_util / count
-            print(f'Average VQ Codebook Utilization (across {count} modules): {average_util*100:.2f}%')
+            print(f'Average TQ Codebook Utilization (across {count} modules): {average_util*100:.2f}%')
         else:
-            print('No VQ modules with codebook meters found.')
+            print('No TQ modules with codebook meters found.')
         return average_util
 
 model_urls = {
-    "poolformer_s12": "https://github.com/sail-sg/poolformer/releases/download/v1.0/poolformer_s12.pth.tar",
-    "poolformer_s24": "https://github.com/sail-sg/poolformer/releases/download/v1.0/poolformer_s24.pth.tar",
-    "poolformer_s36": "https://github.com/sail-sg/poolformer/releases/download/v1.0/poolformer_s36.pth.tar",
-    "poolformer_m36": "https://github.com/sail-sg/poolformer/releases/download/v1.0/poolformer_m36.pth.tar",
-    "poolformer_m48": "https://github.com/sail-sg/poolformer/releases/download/v1.0/poolformer_m48.pth.tar",
+    "tq_poolformer_s12": "https://github.com/sail-sg/tq_poolformer/releases/download/v1.0/tq_poolformer_s12.pth.tar",
+    "tq_poolformer_s24": "https://github.com/sail-sg/tq_poolformer/releases/download/v1.0/tq_poolformer_s24.pth.tar",
+    "tq_poolformer_s36": "https://github.com/sail-sg/tq_poolformer/releases/download/v1.0/tq_poolformer_s36.pth.tar",
+    "tq_poolformer_m36": "https://github.com/sail-sg/tq_poolformer/releases/download/v1.0/tq_poolformer_m36.pth.tar",
+    "tq_poolformer_m48": "https://github.com/sail-sg/tq_poolformer/releases/download/v1.0/tq_poolformer_m48.pth.tar",
 }
 
 
 @register_model
-def vqpoolformer_s12(pretrained=False, **kwargs):
+def tq_poolformer_s12(pretrained=False, **kwargs):
     """
-    PoolFormer-S12 model, Params: 12M
+    TQ_PoolFormer-S12 model, Params: 12M
     --layers: [x,x,x,x], numbers of layers for the four stages
     --embed_dims, --mlp_ratios: 
         embedding dims and mlp ratios for the four stages
@@ -622,100 +622,100 @@ def vqpoolformer_s12(pretrained=False, **kwargs):
     embed_dims = [64, 128, 320, 512]
     mlp_ratios = [4, 4, 4, 4]
     downsamples = [True, True, True, True]
-    model = vqPoolFormer(
+    model = TQ_PoolFormer(
         layers, embed_dims=embed_dims, 
         mlp_ratios=mlp_ratios, downsamples=downsamples, 
         **kwargs)
-    model.default_cfg = default_cfgs['poolformer_s']
+    model.default_cfg = default_cfgs['tq_poolformer_s']
     if pretrained:
-        url = model_urls['poolformer_s12']
+        url = model_urls['tq_poolformer_s12']
         checkpoint = torch.hub.load_state_dict_from_url(url=url, map_location="cpu", check_hash=True)
         model.load_state_dict(checkpoint)
     return model
 
 
 @register_model
-def vqpoolformer_s24(pretrained=False, **kwargs):
+def tq_poolformer_s24(pretrained=False, **kwargs):
     """
-    PoolFormer-S24 model, Params: 21M
+    TQ_PoolFormer-S24 model, Params: 21M
     """
     layers = [4, 4, 12, 4]
     embed_dims = [64, 128, 320, 512]
     mlp_ratios = [4, 4, 4, 4]
     downsamples = [True, True, True, True]
-    model = vqPoolFormer(
+    model = TQ_PoolFormer(
         layers, embed_dims=embed_dims, 
         mlp_ratios=mlp_ratios, downsamples=downsamples, 
         **kwargs)
-    model.default_cfg = default_cfgs['poolformer_s']
+    model.default_cfg = default_cfgs['tq_poolformer_s']
     if pretrained:
-        url = model_urls['poolformer_s24']
+        url = model_urls['tq_poolformer_s24']
         checkpoint = torch.hub.load_state_dict_from_url(url=url, map_location="cpu", check_hash=True)
         model.load_state_dict(checkpoint)
     return model
 
 
 @register_model
-def vqpoolformer_s36(pretrained=False, **kwargs):
+def tq_poolformer_s36(pretrained=False, **kwargs):
     """
-    PoolFormer-S36 model, Params: 31M
+    TQ_PoolFormer-S36 model, Params: 31M
     """
     layers = [6, 6, 18, 6]
     embed_dims = [64, 128, 320, 512]
     mlp_ratios = [4, 4, 4, 4]
     downsamples = [True, True, True, True]
-    model = vqPoolFormer(
+    model = TQ_PoolFormer(
         layers, embed_dims=embed_dims, 
         mlp_ratios=mlp_ratios, downsamples=downsamples, 
         layer_scale_init_value=1e-6, 
         **kwargs)
-    model.default_cfg = default_cfgs['poolformer_s']
+    model.default_cfg = default_cfgs['tq_poolformer_s']
     if pretrained:
-        url = model_urls['poolformer_s36']
+        url = model_urls['tq_poolformer_s36']
         checkpoint = torch.hub.load_state_dict_from_url(url=url, map_location="cpu", check_hash=True)
         model.load_state_dict(checkpoint)
     return model
 
 
 @register_model
-def vqpoolformer_m36(pretrained=False, **kwargs):
+def tq_poolformer_m36(pretrained=False, **kwargs):
     """
-    PoolFormer-M36 model, Params: 56M
+    TQ_PoolFormer-M36 model, Params: 56M
     """
     layers = [6, 6, 18, 6]
     embed_dims = [96, 192, 384, 768]
     mlp_ratios = [4, 4, 4, 4]
     downsamples = [True, True, True, True]
-    model = vqPoolFormer(
+    model = TQ_PoolFormer(
         layers, embed_dims=embed_dims, 
         mlp_ratios=mlp_ratios, downsamples=downsamples, 
         layer_scale_init_value=1e-6, 
         **kwargs)
-    model.default_cfg = default_cfgs['poolformer_m']
+    model.default_cfg = default_cfgs['tq_poolformer_m']
     if pretrained:
-        url = model_urls['poolformer_m36']
+        url = model_urls['tq_poolformer_m36']
         checkpoint = torch.hub.load_state_dict_from_url(url=url, map_location="cpu", check_hash=True)
         model.load_state_dict(checkpoint)
     return model
 
 
 @register_model
-def vqpoolformer_m48(pretrained=False, **kwargs):
+def tq_poolformer_m48(pretrained=False, **kwargs):
     """
-    PoolFormer-M48 model, Params: 73M
+    TQ_PoolFormer-M48 model, Params: 73M
     """
     layers = [8, 8, 24, 8]
     embed_dims = [96, 192, 384, 768]
     mlp_ratios = [4, 4, 4, 4]
     downsamples = [True, True, True, True]
-    model = vqPoolFormer(
+    model = TQ_PoolFormer(
         layers, embed_dims=embed_dims, 
         mlp_ratios=mlp_ratios, downsamples=downsamples, 
         layer_scale_init_value=1e-6, 
         **kwargs)
-    model.default_cfg = default_cfgs['poolformer_m']
+    model.default_cfg = default_cfgs['tq_poolformer_m']
     if pretrained:
-        url = model_urls['poolformer_m48']
+        url = model_urls['tq_poolformer_m48']
         checkpoint = torch.hub.load_state_dict_from_url(url=url, map_location="cpu", check_hash=True)
         model.load_state_dict(checkpoint)
     return model
@@ -728,9 +728,9 @@ if has_mmseg and has_mmdet:
     """
     @seg_BACKBONES.register_module()
     @det_BACKBONES.register_module()
-    class poolformer_s12_feat(PoolFormer):
+    class tq_poolformer_s12_feat(TQ_PoolFormer):
         """
-        PoolFormer-S12 model, Params: 12M
+        TQ_PoolFormer-S12 model, Params: 12M
         """
         def __init__(self, **kwargs):
             layers = [2, 2, 6, 2]
@@ -745,9 +745,9 @@ if has_mmseg and has_mmdet:
 
     @seg_BACKBONES.register_module()
     @det_BACKBONES.register_module()
-    class poolformer_s24_feat(PoolFormer):
+    class tq_poolformer_s24_feat(TQ_PoolFormer):
         """
-        PoolFormer-S24 model, Params: 21M
+        TQ_PoolFormer-S24 model, Params: 21M
         """
         def __init__(self, **kwargs):
             layers = [4, 4, 12, 4]
@@ -762,9 +762,9 @@ if has_mmseg and has_mmdet:
 
     @seg_BACKBONES.register_module()
     @det_BACKBONES.register_module()
-    class poolformer_s36_feat(PoolFormer):
+    class tq_poolformer_s36_feat(TQ_PoolFormer):
         """
-        PoolFormer-S36 model, Params: 31M
+        TQ_PoolFormer-S36 model, Params: 31M
         """
         def __init__(self, **kwargs):
             layers = [6, 6, 18, 6]
@@ -780,9 +780,9 @@ if has_mmseg and has_mmdet:
 
     @seg_BACKBONES.register_module()
     @det_BACKBONES.register_module()
-    class poolformer_m36_feat(PoolFormer):
+    class tq_poolformer_m36_feat(TQ_PoolFormer):
         """
-        PoolFormer-S36 model, Params: 56M
+        TQ_PoolFormer-S36 model, Params: 56M
         """
         def __init__(self, **kwargs):
             layers = [6, 6, 18, 6]
@@ -798,9 +798,9 @@ if has_mmseg and has_mmdet:
 
     @seg_BACKBONES.register_module()
     @det_BACKBONES.register_module()
-    class poolformer_m48_feat(PoolFormer):
+    class tq_poolformer_m48_feat(TQ_PoolFormer):
         """
-        PoolFormer-M48 model, Params: 73M
+        TQ_PoolFormer-M48 model, Params: 73M
         """
         def __init__(self, **kwargs):
             layers = [8, 8, 24, 8]
@@ -816,8 +816,8 @@ if has_mmseg and has_mmdet:
 
 
 if __name__ == '__main__':
-    #python -m timm.models.poolformer.py 
-    model = vqpoolformer_s12(pretrained=False, num_classes=1000)
+    #python -m timm.models.tq_poolformer.py 
+    model = tq_poolformer_s12(pretrained=False, num_classes=1000)
     input = torch.randn(1, 3, 224, 224)
     output = model(input)
     if isinstance(output, tuple):

@@ -7,19 +7,19 @@ from einops import rearrange, repeat, reduce, pack, unpack
 from timm.layers import trunc_normal_
 
 
-def choose_vq(tq_type, dic_n, dim, dic_dim, fsq_level=[3,3,3,3], fsq_Tinit=1):
-    if tq_type == 'vq':
+def choose_tq(tq_type, dic_n, dim, dic_dim, tq_level=[3,3,3,3], tq_Tinit=1):
+    if tq_type == 'tq':
             return VectorQuantizer(n_e=dic_n, channels_in=dim, channels_dim=dic_dim)
-    elif tq_type == 'tfsq':
-        return FSQ_trainableT(channels_in=dim, channels_dim=dic_dim, levels=fsq_level, T=fsq_Tinit)
-    elif tq_type == 'fsq':
-        return FSQ(channels_in=dim, channels_dim=dic_dim, levels=fsq_level)
-    elif tq_type == 'tfsqs':
-        return FSQ_trainableT_scale(channels_in=dim, channels_dim=dic_dim, levels=fsq_level, T=fsq_Tinit)
+    elif tq_type == 'ttq':
+        return TQ_trainableT(channels_in=dim, channels_dim=dic_dim, levels=tq_level, T=tq_Tinit)
+    elif tq_type == 'tq':
+        return TQ(channels_in=dim, channels_dim=dic_dim, levels=tq_level)
+    elif tq_type == 'ttqs':
+        return TQ_trainableT_scale(channels_in=dim, channels_dim=dic_dim, levels=tq_level, T=tq_Tinit)
     elif tq_type == 'bottleneck': # for ablation study
         return Bottleneck(channels_in=dim, channels_dim=dic_dim)
     else:
-        raise RuntimeError('vq type not implemented')
+        raise RuntimeError('tq type not implemented')
 
 
 class TokenToImageToToken(nn.Module):
@@ -75,17 +75,17 @@ def orthogonal_loss_fn(t, unique_index=None):
     normed_codes = l2norm(t)
     cosine_sim = torch.einsum('i d, j d -> i j', normed_codes, normed_codes)
     return (cosine_sim ** 2).sum() / (n ** 2) - (1 / n)
-# self.vq = FSQ(dic_n, dim, dic_dim, index)
-class FSQ(nn.Module):
+# self.tq = TQ(dic_n, dim, dic_dim, index)
+class TQ(nn.Module):
     """
-    vanilla FSQ 
+    vanilla TQ 
     @Article{Mentzer2023,
     author  = {Mentzer, Fabian and Minnen, David and Agustsson, Eirikur and Tschannen, Michael},
     journal = {arXiv preprint arXiv:2309.15505},
     title   = {Finite scalar quantization: Vq-vae made simple},
     year    = {2023},
     file    = {:FINITE SCALAR QUANTIZATION.pdf:PDF},
-    groups  = {VQ},
+    groups  = {TQ},
     }
 
     """
@@ -106,7 +106,7 @@ class FSQ(nn.Module):
 
         self.is_pre_cal = False
     def reparameterize(self):
-        print('using FSQ reparameterize')
+        print('using TQ reparameterize')
         self.is_pre_cal = True
         implicit_codebook = self._indices_to_codes(torch.arange(self.codebook_size))
         # implicit_codebook = torch.tensor(implicit_codebook).to(self.expand.weight.device)
@@ -183,7 +183,7 @@ class FSQ(nn.Module):
         return quantized / half_width
 class Bottleneck(nn.Module):
     """
-    only Linear Bottleneck w/o VQ, for ablation study
+    only Linear Bottleneck w/o TQ, for ablation study
     """
     def __init__(self,channels_in, channels_dim=3):
         super().__init__()
@@ -245,7 +245,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-class FSQ_GumbelSoftmax(nn.Module):
+class TQ_GumbelSoftmax(nn.Module):
     def __init__(self, n_e, channels_in, channels_dim, levels=[15, 15, 15], tau=1.0, hard=True):
         super().__init__()
         self.compress = nn.Linear(channels_in, channels_dim)
@@ -361,7 +361,7 @@ class FSQ_GumbelSoftmax(nn.Module):
             dim=-1,
             index=indices.unsqueeze(-1)
         ).squeeze(-1)
-class FSQ_AdaptiveQuant_todo_fix(nn.Module):
+class TQ_AdaptiveQuant_todo_fix(nn.Module):
     def __init__(self, n_e, channels_in, channels_dim, levels=[15,15,15], bandwidth=0.5):
         super().__init__()
         self.compress = nn.Linear(channels_in, channels_dim)
@@ -443,7 +443,7 @@ class VectorQuantizer(nn.Module):
         self.codebook_dim = channels_dim
         self.is_pre_cal = False
     def reparameterize(self):
-        print('using VQ reparameterize')
+        print('using TQ reparameterize')
         self.is_pre_cal = True
         dict_embeding = self.embedding.weight.data.clone().detach()
         expand_dict = self.expand(dict_embeding)
@@ -477,7 +477,7 @@ class VectorQuantizer(nn.Module):
                 print(f"activated vectors:{unique_index.shape[0]} , num feature: {num_feature}, num dict: {self.codebook_size}")
             return z_q , torch.tensor(0.0).cuda()
 class VectorQuantizer_Sim(nn.Module):
-    # Sim_vq
+    # Sim_tq
     def __init__(self, n_e, channels_in, channels_dim, index=0):
         super().__init__()
         self.embedding = nn.Embedding(n_e, channels_dim)
@@ -489,7 +489,7 @@ class VectorQuantizer_Sim(nn.Module):
         self.is_pre_cal = False
         self.code_transform = nn.Linear(channels_dim, channels_dim)
     def reparameterize(self):
-        print('using VQ reparameterize')
+        print('using TQ reparameterize')
         self.is_pre_cal = True
         dict_embeding = self.code_transform(self.embedding.weight.data)
         expand_dict = self.expand(dict_embeding)
@@ -561,7 +561,7 @@ class VectorQuantizer_LinearRebuild(nn.Module):
         self.codebook_size = n_e
         self.is_pre_cal = False
     def reparameterize(self):
-        print('using VQ reparameterize')
+        print('using TQ reparameterize')
         self.is_pre_cal = True
         dict_embeding = self.embedding.weight.data.clone().detach()
         expand_dict = self.expand(dict_embeding)
@@ -636,7 +636,7 @@ class VectorQuantizer_CosSim(nn.Module):
         self.codebook_size = n_e
         self.is_pre_cal = False
     def reparameterize(self):
-        print('using VQ reparameterize')
+        print('using TQ reparameterize')
         self.is_pre_cal = True
         dict_embeding = self.embedding.weight.data.clone().detach()
         expand_dict = self.expand(dict_embeding)
@@ -699,7 +699,7 @@ class VectorQuantizer_noLinear(nn.Module):
         self.codebook_size = n_e
         self.is_pre_cal = False
     def reparameterize(self):
-        print('using VQ reparameterize')
+        print('using TQ reparameterize')
         self.is_pre_cal = True
         dict_embeding = self.embedding.weight.data.clone().detach()
         # del self.embedding
@@ -761,7 +761,7 @@ class VectorQuantizer_LossMask(nn.Module):
         self.codebook_size = n_e
         self.is_pre_cal = False
     def reparameterize(self):
-        print('using VQ reparameterize')
+        print('using TQ reparameterize')
         self.is_pre_cal = True
         dict_embeding = self.embedding.weight.data.clone().detach()
         expand_dict = self.expand(dict_embeding)
@@ -837,7 +837,7 @@ def efficient_rotation_trick_transform(u, q, e):
 def safe_div(num, den, eps = 1e-6):
     return num / den.clamp(min = eps)
 def rotate_to(src, tgt):
-    # rotation trick STE (https://arxiv.org/abs/2410.06424) to get gradients through VQ layer.
+    # rotation trick STE (https://arxiv.org/abs/2410.06424) to get gradients through TQ layer.
     src, inverse = pack_one(src, '* d')
     tgt, _ = pack_one(tgt, '* d')
 
@@ -886,13 +886,13 @@ class CodebookMeter:
         """返回当前累计的码本利用率"""
         return torch.sum(self.register_mask).item() / self.codebook_size
 
-class FSQ_trainableT(nn.Module):
+class TQ_trainableT(nn.Module):
     '''
-    Based on vanilla FSQ, dynamic trainable quantization scale have been added.
+    Based on vanilla TQ, dynamic trainable quantization scale have been added.
     '''
     def __init__(self, channels_in, channels_dim, levels=[15,15,15], T=0):
         super().__init__()
-        print(f"Using FSQ_trainableT, T init= {T}")
+        print(f"Using TQ_trainableT, T init= {T}")
         self.compress = nn.Linear(channels_in, channels_dim)
         self.expand = nn.Linear(channels_dim, channels_in)
         assert len(levels) == channels_dim
@@ -920,7 +920,7 @@ class FSQ_trainableT(nn.Module):
         # return self.grad_scale(self.T_raw, scale=10)
     
     def reparameterize(self):
-        print('using FSQ_trainableT reparameterize')
+        print('using TQ_trainableT reparameterize')
         self.is_pre_cal = True
         implicit_codebook = self._indices_to_codes(torch.arange(self.codebook_size).to(self.codebook_size.device))
         expand_dict = self.expand(implicit_codebook)
@@ -1012,10 +1012,10 @@ class FSQ_trainableT(nn.Module):
 
 
 
-class FSQ_trainableT_scale(nn.Module):
+class TQ_trainableT_scale(nn.Module):
     def __init__(self, channels_in, channels_dim, levels=[15,15,15], T=0):
         super().__init__()
-        print(f"Using FSQ_trainableT, T init= {T}")
+        print(f"Using TQ_trainableT, T init= {T}")
 
         self.compress = nn.Linear(channels_in, channels_dim)
         self.expand = nn.Linear(channels_dim, channels_in)
@@ -1039,7 +1039,7 @@ class FSQ_trainableT_scale(nn.Module):
     def get_scale(self):
         return self.T_raw
     def reparameterize(self):
-        print('using FSQ_trainableT reparameterize')
+        print('using TQ_trainableT reparameterize')
         self.is_pre_cal = True
         implicit_codebook = self._indices_to_codes(torch.arange(self.codebook_size).to(self.codebook_size.device))
         expand_dict = self.expand(self.alpha*implicit_codebook+self.beta)
@@ -1150,8 +1150,8 @@ if __name__ == '__main__':
         for j, std in enumerate(std_range):
             input = 0.001 + std * torch.randn(1, 100000, 1)
             input = torch.clamp(input, min=-10, max=10)
-            vq = FSQ_T(n_e=0, channels_in=5, channels_dim=1, levels=levels_, T=t.item())
-            output1 = vq.quantize(input)
+            tq = TQ_T(n_e=0, channels_in=5, channels_dim=1, levels=levels_, T=t.item())
+            output1 = tq.quantize(input)
             error = torch.abs(output1 - input).sum()
             error_matrix[i, j] = error
 
@@ -1196,7 +1196,7 @@ if __name__ == '__main__':
     plt.legend()
 
     # 保存图像（支持PNG/PDF/SVG等格式）
-    output_path = "./VQViT/FSQfig/quantization_error_heatmap.png"  # 修改为你的保存路径
+    output_path = "./TQViT/TQfig/quantization_error_heatmap.png"  # 修改为你的保存路径
     plt.savefig(output_path, dpi=300, bbox_inches='tight')  # dpi控制分辨率
     print(f"图像已保存至: {output_path}")
     # from sklearn.decomposition import PCA

@@ -17,7 +17,7 @@ from timm.layers import PatchEmbed, Mlp, DropPath, AttentionPoolLatent, RmsNorm,
     get_act_layer, get_norm_layer, LayerType
 
 
-from timm.models.vectorquantize import VectorQuantizer_LossMask, VectorQuantizer_noLinear, VectorQuantizer_CosSim, VectorQuantizer, VectorQuantizer_LinearRebuild, VectorQuantizer_Sim, TokenToImageToToken, FSQ, FSQ_T,FSQ_trainableT, FSQ_AdaptiveQuant,FSQ_GumbelSoftmax
+from timm.models.vectorquantize import VectorQuantizer_LossMask, VectorQuantizer_noLinear, VectorQuantizer_CosSim, VectorQuantizer, VectorQuantizer_LinearRebuild, VectorQuantizer_Sim, TokenToImageToToken, TQ, TQ_T,TQ_trainableT, TQ_AdaptiveQuant,TQ_GumbelSoftmax
 class LayerScale(nn.Module):
     def __init__(self, dim, init_values=1e-5, inplace=False):
         super().__init__()
@@ -26,7 +26,7 @@ class LayerScale(nn.Module):
 
     def forward(self, x):
         return x.mul_(self.gamma) if self.inplace else x * self.gamma
-class vq_attn_Attention(nn.Module):
+class tq_attn_Attention(nn.Module):
     fused_attn: Final[bool]
 
     def __init__(
@@ -39,9 +39,9 @@ class vq_attn_Attention(nn.Module):
             proj_drop=0.,
             norm_layer=nn.LayerNorm,
 
-            tq_type='vq',
-            fsq_level = [7,7,7,7],
-            dic_n=1000, dic_dim=4, index=0,fsq_Tmax = 10, fsq_Tinit=-1
+            tq_type='tq',
+            tq_level = [7,7,7,7],
+            dic_n=1000, dic_dim=4, index=0,tq_Tmax = 10, tq_Tinit=-1
     ):
         super().__init__()
         assert dim % num_heads == 0, 'dim should be divisible by num_heads'
@@ -58,24 +58,24 @@ class vq_attn_Attention(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop)
 
         self.is_pre_cal = False
-        if tq_type == 'vq':
-            self.vq = VectorQuantizer(dic_n, dim, dic_dim, index)
-        elif tq_type == 'tfsq':
-            # self.vq = FSQ_AdaptiveQuant(dic_n, dim, dic_dim, levels=fsq_level)
-            self.vq = FSQ_trainableT(dic_n, dim, dic_dim, index, levels=fsq_level, T=fsq_Tinit, T_max=fsq_Tmax)
-            # self.vq = FSQ_GumbelSoftmax(dic_n, dim, dic_dim, levels=fsq_level)
-        elif tq_type == 'fsq':
-            self.vq = FSQ_T(dic_n, dim, dic_dim, index, levels=fsq_level, T=1)
-    def reparameterize(self, vq_embedding):
+        if tq_type == 'tq':
+            self.tq = VectorQuantizer(dic_n, dim, dic_dim, index)
+        elif tq_type == 'ttq':
+            # self.tq = TQ_AdaptiveQuant(dic_n, dim, dic_dim, levels=tq_level)
+            self.tq = TQ_trainableT(dic_n, dim, dic_dim, index, levels=tq_level, T=tq_Tinit, T_max=tq_Tmax)
+            # self.tq = TQ_GumbelSoftmax(dic_n, dim, dic_dim, levels=tq_level)
+        elif tq_type == 'tq':
+            self.tq = TQ_T(dic_n, dim, dic_dim, index, levels=tq_level, T=1)
+    def reparameterize(self, tq_embedding):
         '''
-        vq_embedding: codebook->norm
+        tq_embedding: codebook->norm
         '''
         print('using Attention reparameterize')
         self.is_pre_cal = True
-        self.qkv_dict = nn.Embedding(vq_embedding.shape[0], 3*self.dim)
-        vq_embedding = vq_embedding.unsqueeze(0)
-        B, N, C = vq_embedding.shape
-        qkv = self.qkv(vq_embedding).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        self.qkv_dict = nn.Embedding(tq_embedding.shape[0], 3*self.dim)
+        tq_embedding = tq_embedding.unsqueeze(0)
+        B, N, C = tq_embedding.shape
+        qkv = self.qkv(tq_embedding).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
         q = q * self.scale
@@ -88,11 +88,11 @@ class vq_attn_Attention(nn.Module):
         del self.qkv
         del self.q_norm, self.k_norm, self.scale
 
-        self.proj_codebook = nn.Embedding(self.vq.codebook_size, self.dim)
+        self.proj_codebook = nn.Embedding(self.tq.codebook_size, self.dim)
 
-        vq_dict = self.vq.reparameterize()
-        vq_dict = self.proj(vq_dict)
-        self.proj_codebook.weight.data.copy_(vq_dict)
+        tq_dict = self.tq.reparameterize()
+        tq_dict = self.proj(tq_dict)
+        self.proj_codebook.weight.data.copy_(tq_dict)
         del self.proj
 
     def forward(self, x, shape=None):
@@ -122,15 +122,15 @@ class vq_attn_Attention(nn.Module):
         x = x.transpose(1, 2).reshape(B, N, C)
         if self.is_pre_cal:
             loss_dict = torch.tensor(0.0).cuda()
-            embedding_index =  self.vq(x)
+            embedding_index =  self.tq(x)
             x = self.proj_codebook(embedding_index)
         else:
-            x, loss_dict = self.vq(x)
+            x, loss_dict = self.tq(x)
             x = self.proj(x)
         x = self.proj_drop(x)
         return x, loss_dict
 
-class VQMSA(nn.Module):
+class TQMSA(nn.Module):
 
     def __init__(
             self,
@@ -148,14 +148,14 @@ class VQMSA(nn.Module):
             mlp_layer=Mlp,
             dic_n=1024, dic_dim=8,
             index=0,
-            tq_type='vq',
-            fsq_level = [7,7,7,7],
-            fsq_Tmax = 10,
-            fsq_Tinit=-1
+            tq_type='tq',
+            tq_level = [7,7,7,7],
+            tq_Tmax = 10,
+            tq_Tinit=-1
     ):
         super().__init__()
         self.norm1 = norm_layer(dim)
-        self.attn = vq_attn_Attention(
+        self.attn = tq_attn_Attention(
             dim,
             num_heads=num_heads,
             qkv_bias=qkv_bias,
@@ -165,10 +165,10 @@ class VQMSA(nn.Module):
             norm_layer=norm_layer,
             # 暂时固定值
             tq_type=tq_type,
-            fsq_level = fsq_level,
-            dic_n=1000, dic_dim=len(fsq_level), index=index,
-            fsq_Tmax = fsq_Tmax,
-            fsq_Tinit = fsq_Tinit
+            tq_level = tq_level,
+            dic_n=1000, dic_dim=len(tq_level), index=index,
+            tq_Tmax = tq_Tmax,
+            tq_Tinit = tq_Tinit
             
             # dic_n=dic_n, dic_dim=dic_dim, index=index
         )
@@ -179,36 +179,36 @@ class VQMSA(nn.Module):
         self.is_pre_cal = False
         self.dict_n = dic_n
         self.dim = dim
-        if tq_type == 'vq':
-            self.vq = VectorQuantizer(dic_n, dim, dic_dim, index)
-        elif tq_type == 'tfsq':
-            print(f'using FSQ_trainableT in attn,  levels={fsq_level}')
-            self.vq = FSQ_trainableT(dic_n, dim, dic_dim, index, levels=fsq_level, T=fsq_Tinit,T_max=fsq_Tmax)
-        elif tq_type == 'fsq':
-            self.vq = FSQ_T(dic_n, dim, dic_dim, index, levels=fsq_level, T=1)
+        if tq_type == 'tq':
+            self.tq = VectorQuantizer(dic_n, dim, dic_dim, index)
+        elif tq_type == 'ttq':
+            print(f'using TQ_trainableT in attn,  levels={tq_level}')
+            self.tq = TQ_trainableT(dic_n, dim, dic_dim, index, levels=tq_level, T=tq_Tinit,T_max=tq_Tmax)
+        elif tq_type == 'tq':
+            self.tq = TQ_T(dic_n, dim, dic_dim, index, levels=tq_level, T=1)
     def reparameterize(self):
         print('using Block reparameterize')
         self.is_pre_cal = True
-        vq_dict = self.vq.reparameterize()
-        vq_dict = self.norm1(vq_dict)
-        self.attn.reparameterize(vq_dict)
+        tq_dict = self.tq.reparameterize()
+        tq_dict = self.norm1(tq_dict)
+        self.attn.reparameterize(tq_dict)
         del self.norm1
 
     def forward(self, x):
         input0 = x
         if self.is_pre_cal:
             shape = x.shape
-            qkv_vq_loss=torch.tensor(0.0).cuda()
-            embedding_index =  self.vq(x)
-            x, vq_proj_loss = self.attn(embedding_index, shape)
+            qkv_tq_loss=torch.tensor(0.0).cuda()
+            embedding_index =  self.tq(x)
+            x, tq_proj_loss = self.attn(embedding_index, shape)
         else:
-            x, qkv_vq_loss = self.vq(x)
-            x, vq_proj_loss = self.attn(self.norm1(x))
+            x, qkv_tq_loss = self.tq(x)
+            x, tq_proj_loss = self.attn(self.norm1(x))
         x = self.drop_path1(self.ls1(x))
         # feat = x # 蒸馏位置1
         x = input0 + x
 
-        return x, 0.5*qkv_vq_loss+0.5*vq_proj_loss
+        return x, 0.5*qkv_tq_loss+0.5*tq_proj_loss
     
 def format_param_count(param_count, decimal_places=3):
     if param_count >= 1e9:
@@ -355,7 +355,7 @@ class MSA(nn.Module):
         return x
 
 
-def cal_qkvMatDot_FLOPs(batch=1,head_num=6,seq_len=197,dim=384,block_num=12,isvq=False):
+def cal_qkvMatDot_FLOPs(batch=1,head_num=6,seq_len=197,dim=384,block_num=12,istq=False):
     
     '''
     x = F.scaled_dot_product_attention(
@@ -379,7 +379,7 @@ def cal_qkvMatDot_FLOPs(batch=1,head_num=6,seq_len=197,dim=384,block_num=12,isvq
     n = seq_len
     d=dim//head_num
     print(b,h,n,d)
-    if isvq:
+    if istq:
         FLOPs= block_num*((2*d-1)*n*n*b*h + 3*b*h*n*n-1 + (2*n-1)*n*d*b*h)
     else:
         FLOPs= block_num*(b*h*n*d + (2*d-1)*n*n*b*h + 3*b*h*n*n-1 + (2*n-1)*n*d*b*h)
@@ -418,7 +418,7 @@ class FFN(nn.Module):
         x = self.drop_path2(x)
         x = x + input
         return x
-class vq_ffn_Block(nn.Module):
+class tq_ffn_Block(nn.Module):
 
     def __init__(
             self,
@@ -432,20 +432,20 @@ class vq_ffn_Block(nn.Module):
             mlp_layer=Mlp,
             dic_n=1024, dic_dim=4,
             index=0,
-            tq_type='tfsq',
-            fsq_level = [3,3,3,3],
-            fsq_Tmax = 10,
-            fsq_Tinit=-1
+            tq_type='ttq',
+            tq_level = [3,3,3,3],
+            tq_Tmax = 10,
+            tq_Tinit=-1
     ):
         super().__init__()
-        if tq_type == 'vq':
-            print(f'using vq, codebook: {dic_n, dic_dim}')
-            self.vq = VectorQuantizer(dic_n, dim, dic_dim, index)
-        elif tq_type == 'tfsq':
-            print(f'using FSQ_trainableT, levels={fsq_level}')
-            self.vq = FSQ_trainableT(dic_n, dim, dic_dim, index, levels=fsq_level, T=fsq_Tinit,T_max=fsq_Tmax )
-        elif tq_type == 'fsq':
-            self.vq = FSQ_T(dic_n, dim, dic_dim, index, levels=fsq_level, T=1)
+        if tq_type == 'tq':
+            print(f'using tq, codebook: {dic_n, dic_dim}')
+            self.tq = VectorQuantizer(dic_n, dim, dic_dim, index)
+        elif tq_type == 'ttq':
+            print(f'using TQ_trainableT, levels={tq_level}')
+            self.tq = TQ_trainableT(dic_n, dim, dic_dim, index, levels=tq_level, T=tq_Tinit,T_max=tq_Tmax )
+        elif tq_type == 'tq':
+            self.tq = TQ_T(dic_n, dim, dic_dim, index, levels=tq_level, T=1)
         
         self.norm2 = norm_layer(dim)
         self.mlp = mlp_layer(
@@ -462,9 +462,9 @@ class vq_ffn_Block(nn.Module):
     def reparameterize(self):
         print('using Block reparameterize')
         self.is_pre_cal = True
-        self.pre_cal_dict = nn.Embedding(self.vq.codebook_size, self.dim)
-        vq_dict = self.vq.reparameterize()
-        x=self.norm2(vq_dict)
+        self.pre_cal_dict = nn.Embedding(self.tq.codebook_size, self.dim)
+        tq_dict = self.tq.reparameterize()
+        x=self.norm2(tq_dict)
         x=self.mlp(x)
         x = self.ls2(x)
         self.pre_cal_dict.weight.data.copy_(x)
@@ -475,13 +475,13 @@ class vq_ffn_Block(nn.Module):
         input = x
         loss_dict=torch.tensor(0.0).cuda()
         if not self.training and self.is_pre_cal:
-            embedding_index =  self.vq(x)
+            embedding_index =  self.tq(x)
             z_q = self.pre_cal_dict(embedding_index)
             z_q = z_q.view(input.shape)
             return z_q+input, loss_dict
         else:
             feat0 = x 
-            x, loss_dict = self.vq(x)
+            x, loss_dict = self.tq(x)
             x = self.norm2(x)
             x = self.mlp(x)
             x = self.ls2(x)
@@ -494,16 +494,16 @@ if __name__ == '__main__':
     # from fvcore.nn import FlopCountAnalysis
     # from ptflops import get_model_complexity_info
 
-    # vqmsa = VQMSA(dim=384,
+    # tqmsa = TQMSA(dim=384,
     #         num_heads=6,
     #         qkv_bias=False,
     #         qk_norm=False,
     #         attn_drop=0.,
     #         proj_drop=0.,
     #         norm_layer=nn.LayerNorm,
-    #         tq_type='tfsq',
-    #         fsq_level = [3,3,3,3],
-    #         dic_n=1000, dic_dim=4, index=0,fsq_Tmax = 10, fsq_Tinit=-1)
+    #         tq_type='ttq',
+    #         tq_level = [3,3,3,3],
+    #         dic_n=1000, dic_dim=4, index=0,tq_Tmax = 10, tq_Tinit=-1)
     # msa = MSA(dim=384,
     #         num_heads=6,
     #         qkv_bias=False,
@@ -511,7 +511,7 @@ if __name__ == '__main__':
     #         attn_drop=0.,
     #         proj_drop=0.,
     #         )
-    # model=vqmsa
+    # model=tqmsa
     # model=msa
     # model.reparameterize()
 
@@ -534,7 +534,7 @@ if __name__ == '__main__':
     # flops, params = clever_format([flops, params], "%.3f")
     print(f"FLOPs: {flops} ,  params: {param_count}")
 
-    # softmaxqkv = cal_qkvMatDot_FLOPs(batch=1,head_num = 6, seq_len = 145,dim = 384,block_num=12,isvq=False)
+    # softmaxqkv = cal_qkvMatDot_FLOPs(batch=1,head_num = 6, seq_len = 145,dim = 384,block_num=12,istq=False)
     # print(f"qkv FLOPs: {softmaxqkv} ")
 
     # input = torch.randn(input_shape_3).cuda()  # 输入张量形状需匹配模型

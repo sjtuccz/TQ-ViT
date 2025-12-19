@@ -7,34 +7,34 @@ from einops import rearrange, pack, unpack
 from timm.layers import trunc_normal_
 
 
-def choose_vq(tq_type, dic_n, dim, dic_dim, fsq_level=[3,3,3,3], fsq_Tinit=1, input_format='NLC'):
-    if tq_type == 'vq':
+def choose_tq(tq_type, dic_n, dim, dic_dim, tq_level=[3,3,3,3], tq_Tinit=1, input_format='NLC'):
+    if tq_type == 'tq':
             return VectorQuantizer(n_e=dic_n, channels_in=dim, channels_dim=dic_dim)
-    elif tq_type == 'fsq_qde':
-        return FSQ_Qscale_deQscale_equal(channels_in=dim, channels_dim=dic_dim, levels=fsq_level, T=fsq_Tinit)
-    elif tq_type == 'fsq':
-        return FSQ(channels_in=dim, channels_dim=dic_dim, levels=fsq_level)
-    elif tq_type == 'fsq_q':
-        return FSQ_Qscale(channels_in=dim, channels_dim=dic_dim, levels=fsq_level, T=fsq_Tinit)
-    # elif tq_type == 'tfsqs':
-    #     return FSQ_trainableT_scale(channels_in=dim, channels_dim=dic_dim, levels=fsq_level, T=fsq_Tinit)
-    elif tq_type == 'fsq_qd' or tq_type == 'TQ':
-        return FSQ_Qscale_deQscale(channels_in=dim, channels_dim=dic_dim, levels=fsq_level, T=fsq_Tinit, input_format=input_format)
+    elif tq_type == 'tq_qde':
+        return TQ_Qscale_deQscale_equal(channels_in=dim, channels_dim=dic_dim, levels=tq_level, T=tq_Tinit)
+    elif tq_type == 'tq':
+        return TQ(channels_in=dim, channels_dim=dic_dim, levels=tq_level)
+    elif tq_type == 'tq_q':
+        return TQ_Qscale(channels_in=dim, channels_dim=dic_dim, levels=tq_level, T=tq_Tinit)
+    # elif tq_type == 'ttqs':
+    #     return TQ_trainableT_scale(channels_in=dim, channels_dim=dic_dim, levels=tq_level, T=tq_Tinit)
+    elif tq_type == 'tq_qd' or tq_type == 'TQ':
+        return TQ_Qscale_deQscale(channels_in=dim, channels_dim=dic_dim, levels=tq_level, T=tq_Tinit, input_format=input_format)
     elif tq_type == 'bottleneck': # for ablation study
         return Bottleneck(channels_in=dim, channels_dim=dic_dim)
     else:
         raise RuntimeError('tq type not implemented')
 
-class FSQ(nn.Module):
+class TQ(nn.Module):
     """
-    vanilla FSQ 
+    vanilla TQ 
     @Article{Mentzer2023,
     author  = {Mentzer, Fabian and Minnen, David and Agustsson, Eirikur and Tschannen, Michael},
     journal = {arXiv preprint arXiv:2309.15505},
     title   = {Finite scalar quantization: Vq-vae made simple},
     year    = {2023},
     file    = {:FINITE SCALAR QUANTIZATION.pdf:PDF},
-    groups  = {VQ},
+    groups  = {TQ},
     }
 
     """
@@ -55,7 +55,7 @@ class FSQ(nn.Module):
         self.token_wise_rep = False
         self.codebook_meter = CodebookMeter(codebook_size=self.codebook_size)
     def reparameterize(self):
-        print('using FSQ reparameterize')
+        print('using TQ reparameterize')
         self.token_wise_rep = True
         implicit_codebook = self._indices_to_codes(torch.arange(self.codebook_size))
         # implicit_codebook = torch.tensor(implicit_codebook).to(self.expand.weight.device)
@@ -133,7 +133,7 @@ class FSQ(nn.Module):
         return quantized / half_width
 class Bottleneck(nn.Module):
     """
-    only Linear Bottleneck w/o VQ, for ablation study
+    only Linear Bottleneck w/o TQ, for ablation study
     """
     def __init__(self,channels_in, channels_dim=3):
         super().__init__()
@@ -226,7 +226,7 @@ def efficient_rotation_trick_transform(u, q, e):
 def safe_div(num, den, eps = 1e-6):
     return num / den.clamp(min = eps)
 def rotate_to(src, tgt):
-    # rotation trick STE (https://arxiv.org/abs/2410.06424) to get gradients through VQ layer.
+    # rotation trick STE (https://arxiv.org/abs/2410.06424) to get gradients through TQ layer.
     src, inverse = pack_one(src, '* d')
     tgt, _ = pack_one(tgt, '* d')
 
@@ -275,13 +275,13 @@ class CodebookMeter:
         """返回当前累计的码本利用率"""
         return torch.sum(self.register_mask).item() / self.codebook_size
 
-class FSQ_Qscale_deQscale_equal(nn.Module):
+class TQ_Qscale_deQscale_equal(nn.Module):
     '''
-    Based on vanilla FSQ, dynamic trainable quantization scale have been added.
+    Based on vanilla TQ, dynamic trainable quantization scale have been added.
     '''
     def __init__(self, channels_in, channels_dim, levels=[15,15,15], T=0):
         super().__init__()
-        print(f"Using FSQ_trainableT, T init= {T}")
+        print(f"Using TQ_trainableT, T init= {T}")
         self.compress = nn.Linear(channels_in, channels_dim)
         self.expand = nn.Linear(channels_dim, channels_in)
         assert len(levels) == channels_dim
@@ -309,7 +309,7 @@ class FSQ_Qscale_deQscale_equal(nn.Module):
         # return self.grad_scale(self.T_raw, scale=10)
     
     def reparameterize(self):
-        print('using FSQ_trainableT reparameterize')
+        print('using TQ_trainableT reparameterize')
         self.token_wise_rep = True
         implicit_codebook = self._indices_to_codes(torch.arange(self.codebook_size).to(self.codebook_size.device))
         expand_dict = self.expand(implicit_codebook)
@@ -398,20 +398,19 @@ class FSQ_Qscale_deQscale_equal(nn.Module):
         # return quantized / half_width *self.anti_q
         return quantized / half_width *self.get_scale()
         # return quantized / half_width
-class FSQ_Qscale_deQscale(nn.Module):
+class TQ_Qscale_deQscale(nn.Module):
     '''
-    Based on vanilla FSQ, quantization scaling factor & dequantization scaling factor have been added.
+    Based on vanilla TQ, quantization scaling factor & dequantization scaling factor have been added.
     '''
     def __init__(self, channels_in, channels_dim, levels=[15,15,15], T=1, input_format='NLC'):
         super().__init__()
-        print(f"Using FSQ_trainableT, T init= {T}")
+        print(f"Using TQ_trainableT, T init= {T}")
         self.compress = nn.Linear(channels_in, channels_dim)
         self.expand = nn.Linear(channels_dim, channels_in)
         assert len(levels) == channels_dim
         self.codebook_dim = len(levels)
         self.register_buffer("_levels", torch.tensor(levels, dtype=torch.int32))
-        self.register_buffer("codebook_size", torch.tensor(self._levels.prod(), dtype=torch.int32))
-        # self.T_raw = nn.Parameter(torch.tensor(T, dtype=torch.float32))
+        self.register_buffer("codebook_size", self._levels.prod().clone().detach().to(torch.int32))        # self.T_raw = nn.Parameter(torch.tensor(T, dtype=torch.float32))
         self.T_raw = nn.Parameter(torch.tensor([T for _ in range(self.codebook_dim)], dtype=torch.float32)) 
         self.anti_q = nn.Parameter(torch.tensor([T for _ in range(self.codebook_dim)], dtype=torch.float32)) 
         basis = torch.cumprod(
@@ -433,7 +432,7 @@ class FSQ_Qscale_deQscale(nn.Module):
         # return self.grad_scale(self.T_raw, scale=10)
     
     def reparameterize(self):
-        print('using FSQ_trainableT reparameterize')
+        print('using TQ_trainableT reparameterize')
         self.token_wise_rep = True
         implicit_codebook = self._indices_to_codes(torch.arange(self.codebook_size).to(self.codebook_size.device))
         expand_dict = self.expand(implicit_codebook)
@@ -527,13 +526,13 @@ class FSQ_Qscale_deQscale(nn.Module):
         # quantized = self.round_rotation(self.bound(z)).to(z.device)
         half_width = (self._levels // 2).to(z.device)# Renormalize to [-T, T].
         return quantized / half_width *self.anti_q
-class FSQ_Qscale_deQscale_test_dim(nn.Module):
+class TQ_Qscale_deQscale_test_dim(nn.Module):
     '''
-    Based on vanilla FSQ, quantization scaling factor & dequantization scaling factor have been added.
+    Based on vanilla TQ, quantization scaling factor & dequantization scaling factor have been added.
     '''
     def __init__(self, channels_in, channels_dim, levels=[15,15,15], T=1, input_format='NLC'):
         super().__init__()
-        print(f"Using FSQ_trainableT, T init= {T}")
+        print(f"Using TQ_trainableT, T init= {T}")
         self.compress = nn.Linear(channels_in, channels_dim)
         self.expand = nn.Linear(channels_dim, channels_in)
         assert len(levels) == channels_dim
@@ -562,7 +561,7 @@ class FSQ_Qscale_deQscale_test_dim(nn.Module):
         # return self.grad_scale(self.T_raw, scale=10)
     
     def reparameterize(self):
-        print('using FSQ_trainableT reparameterize')
+        print('using TQ_trainableT reparameterize')
         self.token_wise_rep = True
         implicit_codebook = self._indices_to_codes(torch.arange(self.codebook_size).to(self.codebook_size.device))
         expand_dict = self.expand(implicit_codebook)
@@ -664,13 +663,13 @@ class FSQ_Qscale_deQscale_test_dim(nn.Module):
         # quantized = self.round_rotation(self.bound(z)).to(z.device)
         half_width = (self._levels // 2).to(z.device)# Renormalize to [-T, T].
         return quantized / half_width *self.anti_q
-class FSQ_Qscale(nn.Module):
+class TQ_Qscale(nn.Module):
     '''
-    Based on vanilla FSQ, quantization scaling factor & dequantization scaling factor have been added.
+    Based on vanilla TQ, quantization scaling factor & dequantization scaling factor have been added.
     '''
     def __init__(self, channels_in, channels_dim, levels=[15,15,15], T=0):
         super().__init__()
-        print(f"Using FSQ_trainableT, T init= {T}")
+        print(f"Using TQ_trainableT, T init= {T}")
         self.compress = nn.Linear(channels_in, channels_dim)
         self.expand = nn.Linear(channels_dim, channels_in)
         assert len(levels) == channels_dim
@@ -697,7 +696,7 @@ class FSQ_Qscale(nn.Module):
         # return self.grad_scale(self.T_raw, scale=10)
     
     def reparameterize(self):
-        print('using FSQ_trainableT reparameterize')
+        print('using TQ_trainableT reparameterize')
         self.token_wise_rep = True
         implicit_codebook = self._indices_to_codes(torch.arange(self.codebook_size).to(self.codebook_size.device))
         expand_dict = self.expand(implicit_codebook)
@@ -787,10 +786,10 @@ class FSQ_Qscale(nn.Module):
 
 
 
-class FSQ_trainableT_scale(nn.Module):
+class TQ_trainableT_scale(nn.Module):
     def __init__(self, channels_in, channels_dim, levels=[15,15,15], T=0):
         super().__init__()
-        print(f"Using FSQ_trainableT, T init= {T}")
+        print(f"Using TQ_trainableT, T init= {T}")
 
         self.compress = nn.Linear(channels_in, channels_dim)
         self.expand = nn.Linear(channels_dim, channels_in)
@@ -814,7 +813,7 @@ class FSQ_trainableT_scale(nn.Module):
     def get_scale(self):
         return self.T_raw
     def reparameterize(self):
-        print('using FSQ_trainableT reparameterize')
+        print('using TQ_trainableT reparameterize')
         self.token_wise_rep = True
         implicit_codebook = self._indices_to_codes(torch.arange(self.codebook_size).to(self.codebook_size.device))
         expand_dict = self.expand(self.alpha*implicit_codebook+self.beta)
@@ -925,8 +924,8 @@ if __name__ == '__main__':
         for j, std in enumerate(std_range):
             input = 0.001 + std * torch.randn(1, 100000, 1)
             input = torch.clamp(input, min=-10, max=10)
-            vq = FSQ_T(n_e=0, channels_in=5, channels_dim=1, levels=levels_, T=t.item())
-            output1 = vq.quantize(input)
+            tq = TQ_T(n_e=0, channels_in=5, channels_dim=1, levels=levels_, T=t.item())
+            output1 = tq.quantize(input)
             error = torch.abs(output1 - input).sum()
             error_matrix[i, j] = error
 
@@ -971,7 +970,7 @@ if __name__ == '__main__':
     plt.legend()
 
     # 保存图像（支持PNG/PDF/SVG等格式）
-    output_path = "./VQViT/FSQfig/quantization_error_heatmap.png"  # 修改为你的保存路径
+    output_path = "./TQViT/TQfig/quantization_error_heatmap.png"  # 修改为你的保存路径
     plt.savefig(output_path, dpi=300, bbox_inches='tight')  # dpi控制分辨率
     print(f"图像已保存至: {output_path}")
     # from sklearn.decomposition import PCA

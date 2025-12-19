@@ -151,9 +151,9 @@ parser.add_argument('--valid-labels', default='', type=str, metavar='FILENAME',
 parser.add_argument('--retry', default=False, action='store_true',
                     help='Enable batch size decay & retry for single model validation')
 
-# for vqvit pre_calculate
+# for tqvit pre_calculate
 parser.add_argument('--repara', action='store_true', default=False,
-                    help='vqvit pre calculate .')
+                    help='tqvit pre calculate .')
 
 
 
@@ -188,17 +188,17 @@ def cal_qkvMatDot_FLOPs(batch=1,head_num=6,seq_len=197,dim=384,block_num=12):
 
     This code cannot be automatically calculated for FLOPs by these packages: ptflops calflops ptflops fvcore thop
     
-    (vq)vit-t-16: batch=1,head_num=3,seq_len=197,dim=192,block_num=12 ,result: (180M)180.23M
-    (vq)vit-s-16: batch=1,head_num=6,seq_len=197,dim=384,block_num=12  ,result: (360.005M)360.46M
-    (vq)vit-s-32: batch=1,head_num=6,seq_len=50,dim=384,block_num=12    ,result: (23.11M)23.22M
-    (vq)vit-s-32(384): batch=1,head_num=6,seq_len= 145,dim=384,block_num=12, result: (194.95MB)195.28M
-    (vq)vit-b-16: batch=1,head_num=12,seq_len=197,dim=768,block_num=12  ,result: (0.72G)0.72G
+    (tq)vit-t-16: batch=1,head_num=3,seq_len=197,dim=192,block_num=12 ,result: (180M)180.23M
+    (tq)vit-s-16: batch=1,head_num=6,seq_len=197,dim=384,block_num=12  ,result: (360.005M)360.46M
+    (tq)vit-s-32: batch=1,head_num=6,seq_len=50,dim=384,block_num=12    ,result: (23.11M)23.22M
+    (tq)vit-s-32(384): batch=1,head_num=6,seq_len= 145,dim=384,block_num=12, result: (194.95MB)195.28M
+    (tq)vit-b-16: batch=1,head_num=12,seq_len=197,dim=768,block_num=12  ,result: (0.72G)0.72G
     '''
     b=batch
     h = head_num
     n = seq_len
     d=dim//head_num
-    # if isvq:
+    # if istq:
     #     FLOPs= 0.5*block_num*((2*d-1)*n*n*b*h + 3*b*h*n*n-1 + (2*n-1)*n*d*b*h) #MACs -> FLOPs
     # else:
     FLOPs= 0.5*block_num*(b*h*n*d + (2*d-1)*n*n*b*h + 3*b*h*n*n-1 + (2*n-1)*n*d*b*h)
@@ -320,7 +320,7 @@ def validate(args):
             raise NotImplementedError("Please implement flops calculation function for swin model")
     flops, params = clever_format([flops, params], "%.3f")
     average_util = 0.0
-    if any(keyword in args.model for keyword in ('vq', 'tq', 'TQ', 'VQ')):
+    if any(keyword in args.model for keyword in ('tq', 'tq', 'TQ', 'TQ')):
         average_util = model.print_codebook_utilization()
     results = OrderedDict(
         model=args.model,
@@ -445,5 +445,5 @@ def write_results(results_file, results, format='csv'):
 if __name__ == '__main__':
     main()
     # batch=1,head_num=6,seq_len= 145,dim=384,block_num=12
-    # result = cal_qkvMatDot_FLOPs(batch=1,head_num=6,seq_len=145,dim=384,block_num=12, isvq=True)
+    # result = cal_qkvMatDot_FLOPs(batch=1,head_num=6,seq_len=145,dim=384,block_num=12, istq=True)
     # print(result)  

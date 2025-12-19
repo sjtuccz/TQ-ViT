@@ -30,9 +30,9 @@ from ._features_fx import register_notrace_function
 from ._manipulate import checkpoint_seq, named_apply
 from ._registry import generate_default_cfgs, register_model, register_model_deprecations
 from .vision_transformer import get_init_weights_vit
-from timm.models.vectorquantize import choose_vq
+from timm.models.vectorquantize import choose_tq
 
-__all__ = ['vqSwinTransformer']  # model_registry will add each entrypoint fn to this
+__all__ = ['TQ_SwinTransformer']  # model_registry will add each entrypoint fn to this
 
 _logger = logging.getLogger(__name__)
 
@@ -199,8 +199,8 @@ class WindowAttention(nn.Module):
         # x = self.proj(x)
         flops += N * self.dim * self.dim
         return flops
-class vqWindowAttention(nn.Module):
-    """VQ: Window based multi-head self attention (W-MSA) module with relative position bias.
+class tqWindowAttention(nn.Module):
+    """TQ: Window based multi-head self attention (W-MSA) module with relative position bias.
     It supports shifted and non-shifted windows.
     """
     fused_attn: torch.jit.Final[bool]
@@ -215,9 +215,9 @@ class vqWindowAttention(nn.Module):
             attn_drop: float = 0.,
             proj_drop: float = 0.,
 
-            tq_type='fsq_qd',
-            fsq_level = [3,3,3,3],
-            dic_n=None, dic_dim=3, fsq_Tinit=1
+            tq_type='tq_qd',
+            tq_level = [3,3,3,3],
+            dic_n=None, dic_dim=3, tq_Tinit=1
     ):
         """
         Args:
@@ -258,8 +258,8 @@ class vqWindowAttention(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
 
         self.token_wise_rep = False
-        self.qkv_vq = choose_vq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit)
-        self.proj_vq = choose_vq(tq_type=tq_type, dic_n=dic_n, dim=attn_dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit)
+        self.qkv_tq = choose_tq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, tq_level=tq_level, tq_Tinit=tq_Tinit)
+        self.proj_tq = choose_tq(tq_type=tq_type, dic_n=dic_n, dim=attn_dim, dic_dim=dic_dim, tq_level=tq_level, tq_Tinit=tq_Tinit)
         self.attn_dim = attn_dim
     def _get_rel_pos_bias(self) -> torch.Tensor:
         relative_position_bias = self.relative_position_bias_table[
@@ -274,7 +274,7 @@ class vqWindowAttention(nn.Module):
             mask: (0/-inf) mask with shape of (num_windows, Wh*Ww, Wh*Ww) or None
         """
         B_, N, C = x.shape
-        z = self.qkv_vq(x)
+        z = self.qkv_tq(x)
         if isinstance(z, tuple):
             z= z[0]
         if self.token_wise_rep:
@@ -299,7 +299,7 @@ class vqWindowAttention(nn.Module):
         x = attn @ v
 
         x = x.transpose(1, 2).reshape(B_, N, -1)
-        z = self.proj_vq(x)
+        z = self.proj_tq(x)
         if isinstance(z, tuple):
             z= z[0]
         if self.token_wise_rep:
@@ -314,8 +314,8 @@ class vqWindowAttention(nn.Module):
         print('using attn reparameterize')
         self.token_wise_rep = True
 
-        self.qkv_codebook = nn.Embedding(self.qkv_vq.codebook_size, self.attn_dim*3)
-        fixed_codebook_qkv = self.qkv_vq.reparameterize()
+        self.qkv_codebook = nn.Embedding(self.qkv_tq.codebook_size, self.attn_dim*3)
+        fixed_codebook_qkv = self.qkv_tq.reparameterize()
         fixed_codebook_qkv = fixed_codebook_qkv.unsqueeze(0)
         B_, N, C = fixed_codebook_qkv.shape
         qkv = self.qkv(fixed_codebook_qkv).reshape(B_, N, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4).contiguous() 
@@ -329,8 +329,8 @@ class vqWindowAttention(nn.Module):
         )
         del self.qkv, self.scale
 
-        self.proj_codebook = nn.Embedding(self.proj_vq.codebook_size, self.dim)
-        fixed_codebook_proj = self.proj_vq.reparameterize()
+        self.proj_codebook = nn.Embedding(self.proj_tq.codebook_size, self.dim)
+        fixed_codebook_proj = self.proj_tq.reparameterize()
         reped_codebook_proj = self.proj(fixed_codebook_proj)
         self.proj_codebook.weight.data.copy_(reped_codebook_proj)
         del self.proj
@@ -342,8 +342,8 @@ class vqWindowAttention(nn.Module):
         flops = 0
         # dim up & dim down linear in 2 TQ block
         if not self.token_wise_rep:
-            flops += 2 * N * self.dim * self.qkv_vq.codebook_dim
-            flops += 2 * N * self.attn_dim * self.proj_vq.codebook_dim
+            flops += 2 * N * self.dim * self.qkv_tq.codebook_dim
+            flops += 2 * N * self.attn_dim * self.proj_tq.codebook_dim
             # qkv = self.qkv(x)
             flops += N * self.dim * 3 * self.dim
             # attn = (q @ k.transpose(-2, -1))
@@ -353,8 +353,8 @@ class vqWindowAttention(nn.Module):
             # x = self.proj(x)
             flops += N * self.dim * self.dim
         else:
-            flops += N * self.dim * self.qkv_vq.codebook_dim
-            flops += N * self.attn_dim * self.proj_vq.codebook_dim
+            flops += N * self.dim * self.qkv_tq.codebook_dim
+            flops += N * self.attn_dim * self.proj_tq.codebook_dim
             flops += self.num_heads * N * (self.dim // self.num_heads) * N
             flops += self.num_heads * N * N * (self.dim // self.num_heads)
         return flops
@@ -516,7 +516,7 @@ class SwinTransformerBlock(nn.Module):
         flops += self.dim * H * W
         return flops
     
-class SwinTransformerBlock_VQ_ATTN(nn.Module):
+class SwinTransformerBlock_TQ_ATTN(nn.Module):
     """ Swin Transformer Block.
     """
 
@@ -536,9 +536,9 @@ class SwinTransformerBlock_VQ_ATTN(nn.Module):
             act_layer: Callable = nn.GELU,
             norm_layer: Callable = nn.LayerNorm,
 
-            tq_type='fsq_qd',
-            fsq_level = [3,3,3,3],
-            dic_n=None, dic_dim=3, fsq_Tinit=1
+            tq_type='tq_qd',
+            tq_level = [3,3,3,3],
+            dic_n=None, dic_dim=3, tq_Tinit=1
     ):
         """
         Args:
@@ -575,7 +575,7 @@ class SwinTransformerBlock_VQ_ATTN(nn.Module):
         #     attn_drop=attn_drop,
         #     proj_drop=proj_drop,
         # )
-        self.attn = vqWindowAttention(
+        self.attn = tqWindowAttention(
             dim,
             num_heads=num_heads,
             head_dim=head_dim,
@@ -585,8 +585,8 @@ class SwinTransformerBlock_VQ_ATTN(nn.Module):
             proj_drop=proj_drop,
 
             tq_type=tq_type,
-            fsq_level = fsq_level,
-            dic_n=dic_n, dic_dim=dic_dim, fsq_Tinit=fsq_Tinit
+            tq_level = tq_level,
+            dic_n=dic_n, dic_dim=dic_dim, tq_Tinit=tq_Tinit
         )
         self.drop_path1 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
@@ -696,7 +696,7 @@ class SwinTransformerBlock_VQ_ATTN(nn.Module):
             self.token_wise_rep = True
             self.attn.reparameterize()
     
-class SwinTransformerBlock_VQ_FFN(nn.Module):
+class SwinTransformerBlock_TQ_FFN(nn.Module):
     """ Swin Transformer Block.
     """
 
@@ -716,8 +716,8 @@ class SwinTransformerBlock_VQ_FFN(nn.Module):
             act_layer: Callable = nn.GELU,
             norm_layer: Callable = nn.LayerNorm,
 
-            tq_type='fsq_qd',fsq_level = [3,3,3,3],
-            dic_n=None, dic_dim=4, fsq_Tinit=1
+            tq_type='tq_qd',tq_level = [3,3,3,3],
+            dic_n=None, dic_dim=4, tq_Tinit=1
     ):
         """
         Args:
@@ -765,7 +765,7 @@ class SwinTransformerBlock_VQ_FFN(nn.Module):
         )
         self.drop_path2 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
-        self.vq = choose_vq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit)
+        self.tq = choose_tq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, tq_level=tq_level, tq_Tinit=tq_Tinit)
         self.token_wise_rep = False
         if any(self.shift_size):
             # calculate attention mask for SW-MSA
@@ -839,15 +839,15 @@ class SwinTransformerBlock_VQ_FFN(nn.Module):
         B, H, W, C = x.shape
         x = x + self.drop_path1(self._attn(self.norm1(x)))
         x = x.reshape(B, -1, C) # B H*W C == N L C
-        # VQ FFN
+        # TQ FFN
         feat = x
         x = self.norm2(x)
         if not self.training and self.token_wise_rep:
-            embedding_index =  self.vq(x)
+            embedding_index =  self.tq(x)
             z_q = self.rep_codebook(embedding_index)
             x = feat + z_q
         else:
-            x = self.vq(x)
+            x = self.tq(x)
             if isinstance(x, tuple):
                 x = x[0]
             x = feat + self.drop_path2(self.mlp(x))
@@ -865,9 +865,9 @@ class SwinTransformerBlock_VQ_FFN(nn.Module):
         flops += nW * self.attn.flops(self.window_size[0] * self.window_size[1])
         if not self.token_wise_rep:
             flops += 2 * H * W * self.dim * self.dim * self.mlp_ratio # mlp
-            flops += 2 * H * W *self.dim * self.vq.codebook_dim# dim down & dim up linear in TQ block
+            flops += 2 * H * W *self.dim * self.tq.codebook_dim# dim down & dim up linear in TQ block
         else:
-            flops += H * W *self.dim * self.vq.codebook_dim # dim down linear in TQ block
+            flops += H * W *self.dim * self.tq.codebook_dim # dim down linear in TQ block
         # norm2
         flops += self.dim * H * W
         return flops
@@ -875,8 +875,8 @@ class SwinTransformerBlock_VQ_FFN(nn.Module):
     def reparameterize(self):
         print('using FFN reparameterize')
         self.token_wise_rep = True
-        self.rep_codebook = nn.Embedding(self.vq.codebook_size, self.dim)
-        fixed_codebook = self.vq.reparameterize()
+        self.rep_codebook = nn.Embedding(self.tq.codebook_size, self.dim)
+        fixed_codebook = self.tq.reparameterize()
         x=self.mlp(fixed_codebook)
         self.rep_codebook.weight.data.copy_(x)
         del self.mlp
@@ -941,8 +941,8 @@ class SwinTransformerStage(nn.Module):
             drop_path: Union[List[float], float] = 0.,
             norm_layer: Callable = nn.LayerNorm,
 
-            tq_type='fsq_qd',fsq_level = [3,3,3,3],
-            dic_n=None, dic_dim=4, fsq_Tinit=1
+            tq_type='tq_qd',tq_level = [3,3,3,3],
+            dic_n=None, dic_dim=4, tq_Tinit=1
     ):
         """
         Args:
@@ -984,7 +984,7 @@ class SwinTransformerStage(nn.Module):
         blocks=[]
         for i in range(depth):
             if i%2==1:
-                blocks.append(SwinTransformerBlock_VQ_ATTN(
+                blocks.append(SwinTransformerBlock_TQ_ATTN(
                 dim=out_dim,
                 input_resolution=self.output_resolution,
                 num_heads=num_heads,
@@ -998,11 +998,11 @@ class SwinTransformerStage(nn.Module):
                 drop_path=drop_path[i] if isinstance(drop_path, list) else drop_path,
                 norm_layer=norm_layer,
 
-                tq_type=tq_type, fsq_level = fsq_level,
-                dic_n=dic_n, dic_dim=dic_dim, fsq_Tinit=fsq_Tinit
+                tq_type=tq_type, tq_level = tq_level,
+                dic_n=dic_n, dic_dim=dic_dim, tq_Tinit=tq_Tinit
             ))
             else:
-                blocks.append(SwinTransformerBlock_VQ_FFN(
+                blocks.append(SwinTransformerBlock_TQ_FFN(
                 dim=out_dim,
                 input_resolution=self.output_resolution,
                 num_heads=num_heads,
@@ -1015,8 +1015,8 @@ class SwinTransformerStage(nn.Module):
                 attn_drop=attn_drop,
                 drop_path=drop_path[i] if isinstance(drop_path, list) else drop_path,
                 norm_layer=norm_layer,
-                tq_type=tq_type, fsq_level = fsq_level,
-                dic_n=dic_n, dic_dim=dic_dim, fsq_Tinit=fsq_Tinit
+                tq_type=tq_type, tq_level = tq_level,
+                dic_n=dic_n, dic_dim=dic_dim, tq_Tinit=tq_Tinit
             ))
         self.blocks = nn.Sequential(*blocks)
 
@@ -1038,8 +1038,8 @@ class SwinTransformerStage(nn.Module):
             flops += self.downsample.flops()
         return flops
 
-class vqSwinTransformer(nn.Module):
-    """ VQ Swin Transformer
+class TQ_SwinTransformer(nn.Module):
+    """ TQ Swin Transformer
 
     Modified from  : `Swin Transformer: Hierarchical Vision Transformer using Shifted Windows`  -
           https://arxiv.org/pdf/2103.14030
@@ -1067,8 +1067,8 @@ class vqSwinTransformer(nn.Module):
             norm_layer: Union[str, Callable] = nn.LayerNorm,
             weight_init: str = '',
 
-            tq_type='fsq_qd',fsq_level = [3,3,3,3],
-            dic_n=None, dic_dim=4, fsq_Tinit=1,
+            tq_type='tq_qd',tq_level = [3,3,3,3],
+            dic_n=None, dic_dim=4, tq_Tinit=1,
             **kwargs,
     ):
         """
@@ -1148,8 +1148,8 @@ class vqSwinTransformer(nn.Module):
                 drop_path=dpr[i],
                 norm_layer=norm_layer,
 
-                tq_type=tq_type, fsq_level = fsq_level,
-                dic_n=dic_n, dic_dim=dic_dim, fsq_Tinit=fsq_Tinit
+                tq_type=tq_type, tq_level = tq_level,
+                dic_n=dic_n, dic_dim=dic_dim, tq_Tinit=tq_Tinit
             )]
             in_dim = out_dim
             if i > 0:
@@ -1248,15 +1248,15 @@ class vqSwinTransformer(nn.Module):
         for module_name, module in self.named_modules():
             if hasattr(module, 'codebook_meter'): 
                 utilization = module.codebook_meter.utilization 
-                print(f'VQ Module [{module_name}] Codebook Utilization: {utilization * 100:.2f}%')
+                print(f'TQ Module [{module_name}] Codebook Utilization: {utilization * 100:.2f}%')
                 found_modules.append(module_name)
                 sum_util += utilization
                 count += 1
         if count > 0:
             average_util = sum_util / count
-            print(f'Average VQ Codebook Utilization (across {count} modules): {average_util*100:.2f}%')
+            print(f'Average TQ Codebook Utilization (across {count} modules): {average_util*100:.2f}%')
         else:
-            print('No VQ modules with codebook meters found.')
+            print('No TQ modules with codebook meters found.')
         return average_util
 def checkpoint_filter_fn(state_dict, model):
     """ convert patch embedding weight from manual patchify + linear proj to conv"""
@@ -1304,7 +1304,7 @@ def _create_swin_transformer(variant, pretrained=False, **kwargs):
     out_indices = kwargs.pop('out_indices', default_out_indices)
 
     model = build_model_with_cfg(
-        vqSwinTransformer, variant, pretrained,
+        TQ_SwinTransformer, variant, pretrained,
         pretrained_filter_fn=checkpoint_filter_fn,
         feature_cfg=dict(flatten_sequential=True, out_indices=out_indices),
         **kwargs)
@@ -1396,18 +1396,18 @@ default_cfgs = generate_default_cfgs({
         hf_hub_id='timm/',
         url='https://github.com/rwightman/pytorch-image-models/releases/download/v0.1-weights/s3_b-a1e95db4.pth'),
 
-    #vq swin
-    'vqswin_tiny_patch4_window7_224': _cfg(crop_pct=0.875),
+    #tq swin
+    'tqswin_tiny_patch4_window7_224': _cfg(crop_pct=0.875),
 })
 
 
 @register_model
-def vqswin_tiny_patch4_window7_224(pretrained=False, **kwargs) -> vqSwinTransformer:
+def tqswin_tiny_patch4_window7_224(pretrained=False, **kwargs) -> TQ_SwinTransformer:
     """ Swin-T @ 224x224, trained ImageNet-1k
     """
     model_args = dict(patch_size=4, window_size=7, embed_dim=96, depths=(2, 2, 6, 2), num_heads=(3, 6, 12, 24))
     return _create_swin_transformer(
-        'vqswin_tiny_patch4_window7_224', pretrained=pretrained, **dict(model_args, **kwargs))
+        'tqswin_tiny_patch4_window7_224', pretrained=pretrained, **dict(model_args, **kwargs))
 
 
 # @register_model

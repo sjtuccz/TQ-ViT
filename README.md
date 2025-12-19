@@ -28,10 +28,8 @@ Environments:
  `
 
 ### ImageNet-1k:
-Please note that for large models such as tqvit_base or above, when training on ImageNet-1k, please enable Cutmix\Mixup and droppath.
-
 ```sh
-CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.run --nproc_per_node=2 --master_port=29577 trainvqvit.py -j 16 --tqtype TQ --dict-dim 4 --fsq-level 3 3 3 3 --model vqvit_base_patch16_224 --teacher-model vit_base_patch16_224 --output ../output/tqvit --dataset imagenet1k --initial-checkpoint ./pretrained_weights/vit_base_patch16_224.augreg_in21k_ft_in1k.pth  --amp -b 900 --grad-accum-steps 2 --lr 8e-4 --mean 0.5 0.5 0.5 --std 0.5 0.5 0.5 --data-dir /path/imagenet1k
+CUDA_VISIBLE_DEVICES=2,3 python -m torch.distributed.run --nproc_per_node=2 --master_port=29579 trainvqvit.py -j 12 --tqtype TQ --dict-dim 4 --tq-level 3 3 3 3 --model vqvit_base_patch16_224 --teacher-model vit_base_patch16_224 --output ../output/official_dis --dataset imagenet1k --initial-checkpoint ./pretrained_weights/vit_base_patch16_224.augreg_in21k_ft_in1k.pth  --amp -b 800 --grad-accum-steps 3 --lr 8e-4 --mean 0.5 0.5 0.5 --std 0.5 0.5 0.5 --data-dir /path/imagenet1k
 ```
 
 ## Test
@@ -39,12 +37,16 @@ Please note that the *--reparam* option will perform token reparameterization on
 
 ### ImageNet-1k:
 ```sh
-CUDA_VISIBLE_DEVICES=3 python validate.py --model tqvit_small_patch16_224 --dataset imagenet1k --data-dir /path/imagenet1k --checkpoint /path/TQViT/tqvit_small_patch16_224.pth.tar --model-kwargs tq_type='TQ' dic_dim=4 quant_level=[3,3,3,3] --reparam
+CUDA_VISIBLE_DEVICES=3 python validate.py --model tqvit_small_patch16_224 --dataset imagenet1k --data-dir /path/imagenet1k --checkpoint /path/TQViT/tqvit_small_patch16_224.pth.tar --model-kwargs tq_type='TQ' dic_dim=4 tq_levle=[3,3,3,3] --reparam
+```
+
+```sh
+CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.run --nproc_per_node=2 --master_port=29577 trainvqvit.py -j 12 --tqtype TQ --dict-dim 4 --tq-level 5 5 5 5 --model tq_convformer_s18 --teacher-model convformer_s18 --output ../output/swin --dataset imagenet1k --initial-checkpoint ./pretrained_weights/convformer_s18.sail_in22k_ft_in1k.pth  --amp -b 512 --grad-accum-steps 4 --lr 3e-4 --crop-pct 0.9 --epochs 100
 ```
 
 For instance, you can test the model using the provided weights: *output/tqvit_tiny_patch16_224-Acc7072-QuantLevel555-lr4e-4-wd1e-3-310epoch.pth.tar.*
 ```sh
-CUDA_VISIBLE_DEVICES=0 python validate.py --model tqvit_tiny_patch16_224  --dataset imagenet1k --model-kwargs dic_dim=3 tq_type='TQ' quant_level=[5,5,5] -j 24 --checkpoint ../output/tqvit_tiny_patch16_224-Acc70.72-QuantLevel555-lr4e-4-wd1e-3-310epoch.pth.tar --data-dir /in1k_data_path/ImageNet2012/  --reparam
+CUDA_VISIBLE_DEVICES=0 python validate.py --model tqvit_tiny_patch16_224  --dataset imagenet1k --model-kwargs dic_dim=3 tq_type='TQ' tq_levle=[5,5,5] -j 24 --checkpoint ../output/tqvit_tiny_patch16_224-Acc70.72-QuantLevel555-lr4e-4-wd1e-3-310epoch.pth.tar --data-dir /in1k_data_path/ImageNet2012/  --reparam
 ```
 
 then, you will get:

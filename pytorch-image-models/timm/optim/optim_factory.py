@@ -258,7 +258,7 @@ def param_group_fn_with_weight_decay(
                 'lr': lr,
             })
         return param_groups
-def param_group_fn_with_weight_decay_vq(
+def param_group_fn_with_weight_decay_tq(
         model: nn.Module,
         base_lr: float,
         filter_bias_and_bn,
@@ -268,7 +268,7 @@ def param_group_fn_with_weight_decay_vq(
         wd_decay: float = 0.1
 ):
     """
-    for vq
+    for tq
     :param model: PyTorch模型
     :param base_lr: 基础学习率
     :param weight_decay: 权重衰减值
@@ -278,7 +278,7 @@ def param_group_fn_with_weight_decay_vq(
     print('lr_decay for transfer learning: ', lr_decay)
     if lr_decay==0:
         for name, param in model.named_parameters():
-            if 'vq' not in name:
+            if 'tq' not in name:
                 param.requires_grad = False
     if weight_decay and filter_bias_and_bn:
         no_weight_decay_list = set(no_weight_decay_list)
@@ -290,8 +290,8 @@ def param_group_fn_with_weight_decay_vq(
                 continue
 
             # 设置学习率
-            lr = base_lr * lr_decay if 'vq' not in name else base_lr
-            fix_weight_decay = weight_decay if 'vq' not in name else weight_decay * wd_decay
+            lr = base_lr * lr_decay if 'tq' not in name else base_lr
+            fix_weight_decay = weight_decay if 'tq' not in name else weight_decay * wd_decay
             # 设置是否使用权重衰减
             if param.ndim <= 1 or name.endswith(".bias") or name in no_weight_decay_list or 'embedding' in name: 
                 no_decay.append({

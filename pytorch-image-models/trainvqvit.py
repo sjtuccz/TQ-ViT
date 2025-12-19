@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-""" VQ-ViT Training Script
+""" TQ-ViT Training Script
 Rewritten from the train.py script of the timm library
 """
 import argparse
@@ -24,7 +24,7 @@ from timm.data import create_dataset, create_loader, resolve_data_config, Mixup,
 from timm.layers import convert_splitbn_model, convert_sync_batchnorm, set_fast_norm
 from timm.loss import JsdCrossEntropy, SoftTargetCrossEntropy, BinaryCrossEntropy, LabelSmoothingCrossEntropy
 from timm.models import create_model, create_teacher_model,safe_model_name, resume_checkpoint, load_checkpoint, model_parameters
-from timm.optim import create_optimizer_v2, optimizer_kwargs, param_group_fn_with_weight_decay, param_group_fn_with_weight_decay_vq
+from timm.optim import create_optimizer_v2, optimizer_kwargs, param_group_fn_with_weight_decay, param_group_fn_with_weight_decay_tq
 from timm.scheduler import create_scheduler_v2, scheduler_kwargs
 from timm.utils import ApexScaler, NativeScaler
 from timm.data.constants import CIFAR10_MEAN, CIFAR10_STD, CIFAR100_TRAIN_MEAN, CIFAR100_TRAIN_STD, TINY_IMAGENET_MEAN, TINY_IMAGENET_STD,IMAGENET_DEFAULT_MEAN,IMAGENET_DEFAULT_STD
@@ -102,13 +102,13 @@ group = parser.add_argument_group('Model parameters')
 group.add_argument('--model', default='vit_small_patch32_224', type=str, metavar='MODEL',
                    help='Name of model to train (default: "resnet50")')
 
-group.add_argument('--tqtype', default='fsq_qd', type=str, metavar='VQ',
+group.add_argument('--tqtype', default='tq_qd', type=str, metavar='TQ',
                    help='tqtype')
-group.add_argument('--fsq-level', type=int, nargs='+', default=[3,3,3,3], metavar='FSQLEVEL',
-                   help='fsq level')
+group.add_argument('--tq-level', type=int, nargs='+', default=[3,3,3,3], metavar='TQLEVEL',
+                   help='tq level')
 
-parser.add_argument('--dict-dim', default=2, type=int, metavar='vqvit_dict_dim',
-                    help='vqvit dict dim')
+parser.add_argument('--dict-dim', default=2, type=int, metavar='tqvit_dict_dim',
+                    help='tqvit dict dim')
 parser.add_argument('--teacher-model', default=None, type=str, metavar='TEACHER-MODEL',
                     help='Name of model to train (default: "countception"')
 group.add_argument('--pretrained', action='store_true', default=False,
@@ -505,7 +505,7 @@ def main():
         strict=False,
         dic_dim=args.dict_dim,
         tq_type=args.tqtype,
-        fsq_level=args.fsq_level,
+        tq_level=args.tq_level,
         **args.model_kwargs,
     )
 
@@ -605,7 +605,7 @@ def main():
         print('using pretrained finetune, In addition to the head layer, the rest of the layers loaded with pre-training weights use a smaller learning rate, If lr_decay==0, freeze the pre-training layer')
         optimizer = create_optimizer_v2(
             model,
-            param_group_fn=param_group_fn_with_weight_decay_vq,
+            param_group_fn=param_group_fn_with_weight_decay_tq,
             **optimizer_kwargs(cfg=args),
             **args.opt_kwargs,
         )

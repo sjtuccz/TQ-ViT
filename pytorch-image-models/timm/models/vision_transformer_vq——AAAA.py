@@ -7,7 +7,7 @@ A PyTorch implement of Vision Transformers as described in:
 
 
 Acknowledgments:
-  vq ATTN 和 vq FFN 交替进行 (该版本为vq在Norm之后,具有更好的字典激活 无字典坍塌现象)
+  tq ATTN 和 tq FFN 交替进行 (该版本为tq在Norm之后,具有更好的字典激活 无字典坍塌现象)
 
 """
 import logging
@@ -30,9 +30,9 @@ from ._builder import build_model_with_cfg
 from ._manipulate import named_apply, checkpoint_seq, adapt_input_conv
 from ._registry import generate_default_cfgs, register_model, register_model_deprecations
 
-from timm.models.vectorquantize import choose_vq
+from timm.models.vectorquantize import choose_tq
 
-__all__ = ['vqVisionTransformer']  # model_registry will add each entrypoint fn to this
+__all__ = ['tqVisionTransformer']  # model_registry will add each entrypoint fn to this
 
 
 _logger = logging.getLogger(__name__)
@@ -88,7 +88,7 @@ class Attention(nn.Module):
         x = self.proj_drop(x)
         return x
 
-class vq_attn_Attention(nn.Module):
+class tq_attn_Attention(nn.Module):
     fused_attn: Final[bool]
 
     def __init__(
@@ -101,9 +101,9 @@ class vq_attn_Attention(nn.Module):
             proj_drop=0.,
             norm_layer=nn.LayerNorm,
 
-            tq_type='fsq_qd',
-            fsq_level = [3,3,3,3],
-            dic_n=None, dic_dim=3, fsq_Tinit=1
+            tq_type='tq_qd',
+            tq_level = [3,3,3,3],
+            dic_n=None, dic_dim=3, tq_Tinit=1
     ):
         super().__init__()
         assert dim % num_heads == 0, 'dim should be divisible by num_heads'
@@ -120,7 +120,7 @@ class vq_attn_Attention(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop)
 
         self.token_wise_rep = False
-        self.vq = choose_vq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit)
+        self.tq = choose_tq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, tq_level=tq_level, tq_Tinit=tq_Tinit)
     def reparameterize(self, fixed_codebook):
         '''
         fixed_codebook: codebook->norm
@@ -143,9 +143,9 @@ class vq_attn_Attention(nn.Module):
         del self.qkv
         del self.q_norm, self.k_norm, self.scale
 
-        self.proj_codebook = nn.Embedding(self.vq.codebook_size, self.dim)
+        self.proj_codebook = nn.Embedding(self.tq.codebook_size, self.dim)
 
-        fixed_codebook = self.vq.reparameterize()
+        fixed_codebook = self.tq.reparameterize()
         reped_codebook = self.proj(fixed_codebook)
         self.proj_codebook.weight.data.copy_(reped_codebook)
         del self.proj
@@ -165,7 +165,7 @@ class vq_attn_Attention(nn.Module):
             qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4).contiguous() 
             q, k, v = qkv.unbind(0)
             q, k = self.q_norm(q), self.k_norm(k)
-            # print(f'VQ Attention q mean:{q.mean().item()}, k mean:{k.mean().item()} , q std: {q.std().item()}, k std: {k.std().item()}, qk std:{(q @ k.transpose(-2, -1)).std().item()}, scale:{self.scale}   ')
+            # print(f'TQ Attention q mean:{q.mean().item()}, k mean:{k.mean().item()} , q std: {q.std().item()}, k std: {k.std().item()}, qk std:{(q @ k.transpose(-2, -1)).std().item()}, scale:{self.scale}   ')
             q = q * self.scale
             # print(f'q.shape before rep: {q.shape}')
         
@@ -177,10 +177,10 @@ class vq_attn_Attention(nn.Module):
 
         x = x.transpose(1, 2).reshape(B, N, C)
         if self.token_wise_rep:
-            embedding_index =  self.vq(x)
+            embedding_index =  self.tq(x)
             x = self.proj_codebook(embedding_index)
         else:
-            x = self.vq(x)
+            x = self.tq(x)
             x = self.proj(x)
         x = self.proj_drop(x)
         return x
@@ -194,7 +194,7 @@ class LayerScale(nn.Module):
 
     def forward(self, x):
         return x.mul_(self.gamma) if self.inplace else x * self.gamma
-class vq_ffn_Block(nn.Module):
+class tq_ffn_Block(nn.Module):
 
     def __init__(
             self,
@@ -212,10 +212,10 @@ class vq_ffn_Block(nn.Module):
             mlp_layer=Mlp,
             dic_n=1024, dic_dim=4,
             index=0,
-            tq_type='vq',
-            fsq_level = [3,3,3,3],
-            fsq_Tmax = 10,
-            fsq_Tinit=1,
+            tq_type='tq',
+            tq_level = [3,3,3,3],
+            tq_Tmax = 10,
+            tq_Tinit=1,
 
             layer_scale_init_value=1e-5
     ):
@@ -232,7 +232,7 @@ class vq_ffn_Block(nn.Module):
         )
         self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
         self.drop_path1 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-        self.vq = choose_vq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit)
+        self.tq = choose_tq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, tq_level=tq_level, tq_Tinit=tq_Tinit)
         self.norm2 = norm_layer(dim)
         self.mlp = mlp_layer(
             in_features=dim,
@@ -254,8 +254,8 @@ class vq_ffn_Block(nn.Module):
     def reparameterize(self):
         print('using Block reparameterize')
         self.token_wise_rep = True
-        self.rep_codebook = nn.Embedding(self.vq.codebook_size, self.dim)
-        fixed_codebook = self.vq.reparameterize()
+        self.rep_codebook = nn.Embedding(self.tq.codebook_size, self.dim)
+        fixed_codebook = self.tq.reparameterize()
         x=self.mlp(fixed_codebook)
         x = self.ls2(x)
         self.rep_codebook.weight.data.copy_(x)
@@ -270,13 +270,13 @@ class vq_ffn_Block(nn.Module):
         feat0 = x # 蒸馏位置2
         x = self.norm2(x) 
         if not self.training and self.token_wise_rep:
-            embedding_index =  self.vq(x)
+            embedding_index =  self.tq(x)
             z_q = self.rep_codebook(embedding_index)
             z_q = z_q.view(feat0.shape)
             return z_q+feat0
         else:
 
-            x = self.vq(x)
+            x = self.tq(x)
             x = self.mlp(x)
             # feat = x # z蒸馏位置3
             x = self.ls2(x)
@@ -286,7 +286,7 @@ class vq_ffn_Block(nn.Module):
             feat = x # 蒸馏位置4
             return x, (feat0, feat)
 
-class vq_attn_Block(nn.Module):
+class tq_attn_Block(nn.Module):
 
     def __init__(
             self,
@@ -304,14 +304,14 @@ class vq_attn_Block(nn.Module):
             mlp_layer=Mlp,
             dic_n=1024, dic_dim=8,
             index=0,
-            tq_type='vq',
-            fsq_level = [7,7,7,7],
-            fsq_Tmax = 10,
-            fsq_Tinit=1
+            tq_type='tq',
+            tq_level = [7,7,7,7],
+            tq_Tmax = 10,
+            tq_Tinit=1
     ):
         super().__init__()
         self.norm1 = norm_layer(dim)
-        self.attn = vq_attn_Attention(
+        self.attn = tq_attn_Attention(
             dim,
             num_heads=num_heads,
             qkv_bias=qkv_bias,
@@ -321,9 +321,9 @@ class vq_attn_Block(nn.Module):
             norm_layer=norm_layer,
             # 暂时固定值
             tq_type=tq_type,
-            fsq_level = fsq_level,
-            dic_n=1000, dic_dim=len(fsq_level),
-            fsq_Tinit = fsq_Tinit
+            tq_level = tq_level,
+            dic_n=1000, dic_dim=len(tq_level),
+            tq_Tinit = tq_Tinit
             
             # dic_n=dic_n, dic_dim=dic_dim, index=index
         )
@@ -342,11 +342,11 @@ class vq_attn_Block(nn.Module):
         self.token_wise_rep = False
         self.dict_n = dic_n
         self.dim = dim
-        self.vq = choose_vq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, fsq_level=fsq_level, fsq_Tinit=fsq_Tinit)
+        self.tq = choose_tq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, tq_level=tq_level, tq_Tinit=tq_Tinit)
     def reparameterize(self):
         print('using Block reparameterize')
         self.token_wise_rep = True
-        fixed_codebook = self.vq.reparameterize()
+        fixed_codebook = self.tq.reparameterize()
         # print(f'fixed_codebook.shape: {fixed_codebook.shape}')
         self.attn.reparameterize(fixed_codebook)
 
@@ -355,10 +355,10 @@ class vq_attn_Block(nn.Module):
         x = self.norm1(x)
         if self.token_wise_rep:
             shape = x.shape
-            embedding_index =  self.vq(x)
+            embedding_index =  self.tq(x)
             x = self.attn(embedding_index, shape)
         else:
-            x = self.vq(x)
+            x = self.tq(x)
             x = self.attn(x)
 
         feat_attn = x
@@ -440,7 +440,7 @@ class Block(nn.Module):
         x = x + input
         feat = x  # 蒸馏位置4
         return x, torch.tensor(0.0).cuda(), (feat0,feat)
-class vqVisionTransformer(nn.Module):
+class tqVisionTransformer(nn.Module):
     """ Vision Transformer
 
     A PyTorch impl of : `An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale`
@@ -481,7 +481,7 @@ class vqVisionTransformer(nn.Module):
             act_layer: Optional[LayerType] = None,
             block_fn: Type[nn.Module] = None,
             mlp_layer: Type[nn.Module] = Mlp,
-            dic_n=None, dic_dim=4, tq_type='fsq_qd', fsq_level=[3,3,3,3], fsq_Tinit=1
+            dic_n=None, dic_dim=4, tq_type='tq_qd', tq_level=[3,3,3,3], tq_Tinit=1
     ):
         """
         Args:
@@ -560,8 +560,8 @@ class vqVisionTransformer(nn.Module):
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
         
         block_list = list()
-       # ========== vanilla ATTN + vq FFN  ==========
-        # block_list=[vq_ffn_Block(
+       # ========== vanilla ATTN + tq FFN  ==========
+        # block_list=[tq_ffn_Block(
         #         dim=embed_dim,
         #         num_heads=num_heads,
         #         mlp_ratio=mlp_ratio,
@@ -577,10 +577,10 @@ class vqVisionTransformer(nn.Module):
         #         dic_n=dic_n, dic_dim=dic_dim,
         #         index=i,
         #         tq_type=tq_type,
-        #         fsq_level = fsq_level,
-        #           fsq_Tinit=fsq_Tinit
+        #         tq_level = tq_level,
+        #           tq_Tinit=tq_Tinit
         #     ) for i in range(depth)]
-        # ========== ATTN + (ffn & vq FFN alternately) ==========
+        # ========== ATTN + (ffn & tq FFN alternately) ==========
         # for i in range(depth):
         #     if i%2==0:
         #         block_list.append(Block(
@@ -598,7 +598,7 @@ class vqVisionTransformer(nn.Module):
         #         mlp_layer=mlp_layer
         #     ) )
         #     else:
-        #         block_list.append(vq_ffn_Block(
+        #         block_list.append(tq_ffn_Block(
         #         dim=embed_dim,
         #         num_heads=num_heads,
         #         mlp_ratio=mlp_ratio,
@@ -614,13 +614,13 @@ class vqVisionTransformer(nn.Module):
         #         dic_n=dic_n, dic_dim=dic_dim,
         #         index=i,
         #         tq_type=tq_type,
-        #         fsq_level = fsq_level,
-        #           fsq_Tinit=fsq_Tinit
+        #         tq_level = tq_level,
+        #           tq_Tinit=tq_Tinit
         #     ))
-        # ========== vq ATTN + vq FFN alternately ==========
+        # ========== tq ATTN + tq FFN alternately ==========
         for i in range(depth):
             if i%2==0:
-                block_list.append(vq_ffn_Block(
+                block_list.append(tq_ffn_Block(
                 dim=embed_dim,
                 num_heads=num_heads,
                 mlp_ratio=mlp_ratio,
@@ -636,11 +636,11 @@ class vqVisionTransformer(nn.Module):
                 dic_n=dic_n, dic_dim=dic_dim,
                 index=i,
                 tq_type=tq_type,
-                fsq_level = fsq_level,
-                  fsq_Tinit=fsq_Tinit
+                tq_level = tq_level,
+                  tq_Tinit=tq_Tinit
             ) )
             else:
-                block_list.append(vq_attn_Block(
+                block_list.append(tq_attn_Block(
                 dim=embed_dim,
                 num_heads=num_heads,
                 mlp_ratio=mlp_ratio,
@@ -656,11 +656,11 @@ class vqVisionTransformer(nn.Module):
                 dic_n=dic_n, dic_dim=dic_dim,
                 index=i,
                 tq_type=tq_type,
-                fsq_level = fsq_level,
-                  fsq_Tinit=fsq_Tinit
+                tq_level = tq_level,
+                  tq_Tinit=tq_Tinit
             ))
 
-        # ========== only vq FFN inmiddle ==========
+        # ========== only tq FFN inmiddle ==========
         # for i in range(depth):
         #     if i==0 or i==depth-1:
         #         block_list.append(Block(
@@ -678,7 +678,7 @@ class vqVisionTransformer(nn.Module):
         #         mlp_layer=mlp_layer,
         #     ) )
         #     else:
-        #         block_list.append(vq_ffn_Block(
+        #         block_list.append(tq_ffn_Block(
         #         dim=embed_dim,
         #         num_heads=num_heads,
         #         mlp_ratio=mlp_ratio,
@@ -694,8 +694,8 @@ class vqVisionTransformer(nn.Module):
         #         dic_n=dic_n, dic_dim=dic_dim,
         #         index=i,
         #         tq_type=tq_type,
-        #         fsq_level = fsq_level,
-        #           fsq_Tinit=fsq_Tinit
+        #         tq_level = tq_level,
+        #           tq_Tinit=tq_Tinit
         #     ))
 
 
@@ -737,10 +737,10 @@ class vqVisionTransformer(nn.Module):
                 block.reparameterize()
     def use_shared_codebook(self):
         print('using shared codebook')
-        first_vq, *rest_vq = self.blocks
-        codebook = first_vq.vq.embedding
-        for vq in rest_vq:
-            vq.vq.embedding = codebook  
+        first_tq, *rest_tq = self.blocks
+        codebook = first_tq.tq.embedding
+        for tq in rest_tq:
+            tq.tq.embedding = codebook  
         
     def init_weights(self, mode=''):
         assert mode in ('jax', 'jax_nlhb', 'moco', '')
@@ -761,19 +761,19 @@ class vqVisionTransformer(nn.Module):
         found_modules = []  # 用于记录找到的模块及其路径
         # 递归遍历所有子模块
         for module_name, module in self.named_modules():
-            # 检查模块是否是 VQ 实例（根据您的类名调整条件）
-            # 例如，如果您的VQ类名为 VectorQuantizer：
+            # 检查模块是否是 TQ 实例（根据您的类名调整条件）
+            # 例如，如果您的TQ类名为 VectorQuantizer：
             if hasattr(module, 'codebook_meter'): # 或者使用 isinstance(module, VectorQuantizer)
                 utilization = module.codebook_meter.utilization # 注意：这里是属性，不是方法调用
-                print(f'VQ Module [{module_name}] Codebook Utilization: {utilization * 100:.2f}%')
+                print(f'TQ Module [{module_name}] Codebook Utilization: {utilization * 100:.2f}%')
                 found_modules.append(module_name)
                 sum_util += utilization
                 count += 1
         if count > 0:
             average_util = sum_util / count
-            print(f'Average VQ Codebook Utilization (across {count} modules): {average_util*100:.2f}%')
+            print(f'Average TQ Codebook Utilization (across {count} modules): {average_util*100:.2f}%')
         else:
-            print('No VQ modules with codebook meters found.')
+            print('No TQ modules with codebook meters found.')
         return average_util
 
     @torch.jit.ignore()
@@ -1028,7 +1028,7 @@ def resize_pos_embed(
 
 
 @torch.no_grad()
-def _load_weights(model: vqVisionTransformer, checkpoint_path: str, prefix: str = ''):
+def _load_weights(model: tqVisionTransformer, checkpoint_path: str, prefix: str = ''):
     """ Load weights from .npz checkpoints for official Google Brain Flax implementation
     """
     import numpy as np
@@ -1300,15 +1300,15 @@ def _cfg(url='', **kwargs):
 default_cfgs = {
 
     # re-finetuned augreg 21k FT on in1k weights
-    'vqvit_tiny_patch16_224': _cfg(),
-    'vqvit_small_patch16_224': _cfg(),
-    'vqvit_small_patch32_224': _cfg(),
-    'vqvit_base_patch16_224': _cfg(),
-    'vqvit_base_patch32_224': _cfg(),
-    'vqvit_large_patch16_224': _cfg(),
-    'vqvit_large_patch32_224': _cfg(),
-    # 'vqvit_tiny_patch16_224.augreg_in21k_ft_in1k': _cfg(
-    # 'vqvit_small_patch32_224.augreg_in21k_ft_in1k': _cfg(
+    'tqvit_tiny_patch16_224': _cfg(),
+    'tqvit_small_patch16_224': _cfg(),
+    'tqvit_small_patch32_224': _cfg(),
+    'tqvit_base_patch16_224': _cfg(),
+    'tqvit_base_patch32_224': _cfg(),
+    'tqvit_large_patch16_224': _cfg(),
+    'tqvit_large_patch32_224': _cfg(),
+    # 'tqvit_tiny_patch16_224.augreg_in21k_ft_in1k': _cfg(
+    # 'tqvit_small_patch32_224.augreg_in21k_ft_in1k': _cfg(
     #     url='https://storage.googleapis.com/vit_models/augreg/S_32-i21k-300ep-lr_0.001-aug_light1-wd_0.03-do_0.0-sd_0.0--imagenet2012-steps_20k-lr_0.03-res_224.npz',
     #     hf_hub_id='timm/',
     #     custom_load=True),
@@ -1994,7 +1994,7 @@ def _create_vision_transformer(variant, pretrained=False, **kwargs):
         strict = False
 
     return build_model_with_cfg(
-        vqVisionTransformer,
+        tqVisionTransformer,
         variant,
         pretrained,
         pretrained_filter_fn=_filter_fn,
@@ -2004,116 +2004,116 @@ def _create_vision_transformer(variant, pretrained=False, **kwargs):
 
 # for cifar: Reduce the input size to 32,reduce the patch size to 4, reduce the depth to 7
 @register_model
-def vqvit_tiny_patch4_32(pretrained=False, **kwargs) -> vqVisionTransformer:
+def tqvit_tiny_patch4_32(pretrained=False, **kwargs) -> tqVisionTransformer:
     """ ViT-Tiny (Vit-Ti/4)
     """
     model_args = dict(img_size=32,patch_size=4, embed_dim=192, depth=7, num_heads=3)
-    model = _create_vision_transformer('vqvit_tiny_patch4_32', pretrained=pretrained, **dict(model_args, **kwargs))
+    model = _create_vision_transformer('tqvit_tiny_patch4_32', pretrained=pretrained, **dict(model_args, **kwargs))
     return model
 # for cifar: Reduce the input size to 32,reduce the patch size to 4
 @register_model
-def vqvit_tiny_patch4_32_2(pretrained=False, **kwargs) -> vqVisionTransformer:
+def tqvit_tiny_patch4_32_2(pretrained=False, **kwargs) -> tqVisionTransformer:
     """ ViT-Tiny (Vit-Ti/4)
     """
     model_args = dict(img_size=32,patch_size=4, embed_dim=192, depth=12, num_heads=3)
-    model = _create_vision_transformer('vqvit_tiny_patch4_32_2', pretrained=pretrained, **dict(model_args, **kwargs))
+    model = _create_vision_transformer('tqvit_tiny_patch4_32_2', pretrained=pretrained, **dict(model_args, **kwargs))
     return model
 # for cifar: as a benchmark model
 @register_model
-def vqvit_tiny_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+def tqvit_tiny_patch16_224(pretrained=False, **kwargs) -> tqVisionTransformer:
     """ ViT-Tiny (Vit-Ti/16)
     """
     model_args = dict(patch_size=16, embed_dim=192, depth=12, num_heads=3)
-    model = _create_vision_transformer('vqvit_tiny_patch16_224', pretrained=pretrained, **dict(model_args, **kwargs))
+    model = _create_vision_transformer('tqvit_tiny_patch16_224', pretrained=pretrained, **dict(model_args, **kwargs))
     return model
 
 
 @register_model
-def vqvit_tiny_patch16_384(pretrained=False, **kwargs) -> vqVisionTransformer:
+def tqvit_tiny_patch16_384(pretrained=False, **kwargs) -> tqVisionTransformer:
     """ ViT-Tiny (Vit-Ti/16) @ 384x384.
     """
     model_args = dict(patch_size=16, embed_dim=192, depth=12, num_heads=3)
-    model = _create_vision_transformer('vqvit_tiny_patch16_384', pretrained=pretrained, **dict(model_args, **kwargs))
+    model = _create_vision_transformer('tqvit_tiny_patch16_384', pretrained=pretrained, **dict(model_args, **kwargs))
     return model
 
 
 @register_model
-def vqvit_small_patch32_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+def tqvit_small_patch32_224(pretrained=False, **kwargs) -> tqVisionTransformer:
     """ ViT-Small (ViT-S/32)
     """
     model_args = dict(patch_size=32, embed_dim=384, depth=12, num_heads=6)#, mlp_layer=Mlp3Linear)
-    model = _create_vision_transformer('vqvit_small_patch32_224', pretrained=pretrained, **dict(model_args, **kwargs))
+    model = _create_vision_transformer('tqvit_small_patch32_224', pretrained=pretrained, **dict(model_args, **kwargs))
     return model
 
 
 @register_model
-def vqvit_small_patch32_384(pretrained=False, **kwargs) -> vqVisionTransformer:
+def tqvit_small_patch32_384(pretrained=False, **kwargs) -> tqVisionTransformer:
     """ ViT-Small (ViT-S/32) at 384x384.
     """
     model_args = dict(patch_size=32, embed_dim=384, depth=12, num_heads=6, img_size=384)
-    model = _create_vision_transformer('vqvit_small_patch32_384', pretrained=pretrained, **dict(model_args, **kwargs))
+    model = _create_vision_transformer('tqvit_small_patch32_384', pretrained=pretrained, **dict(model_args, **kwargs))
     return model
 
 
 @register_model
-def vqvit_small_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+def tqvit_small_patch16_224(pretrained=False, **kwargs) -> tqVisionTransformer:
     """ ViT-Small (ViT-S/16)
     """
     model_args = dict(patch_size=16, embed_dim=384, depth=12, num_heads=6)
-    model = _create_vision_transformer('vqvit_small_patch16_224', pretrained=pretrained, **dict(model_args, **kwargs))
+    model = _create_vision_transformer('tqvit_small_patch16_224', pretrained=pretrained, **dict(model_args, **kwargs))
     return model
 
 
 @register_model
-def vqvit_small_patch16_384(pretrained=False, **kwargs) -> vqVisionTransformer:
+def tqvit_small_patch16_384(pretrained=False, **kwargs) -> tqVisionTransformer:
     """ ViT-Small (ViT-S/16)
     """
     model_args = dict(patch_size=16, embed_dim=384, depth=12, num_heads=6)
-    model = _create_vision_transformer('vqvit_small_patch16_384', pretrained=pretrained, **dict(model_args, **kwargs))
+    model = _create_vision_transformer('tqvit_small_patch16_384', pretrained=pretrained, **dict(model_args, **kwargs))
     return model
 
 
 @register_model
-def vqvit_small_patch8_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+def tqvit_small_patch8_224(pretrained=False, **kwargs) -> tqVisionTransformer:
     """ ViT-Small (ViT-S/8)
     """
     model_args = dict(patch_size=8, embed_dim=384, depth=12, num_heads=6)
-    model = _create_vision_transformer('vqvit_small_patch8_224', pretrained=pretrained, **dict(model_args, **kwargs))
+    model = _create_vision_transformer('tqvit_small_patch8_224', pretrained=pretrained, **dict(model_args, **kwargs))
     return model
 
 
 @register_model
-def vqvit_base_patch32_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+def tqvit_base_patch32_224(pretrained=False, **kwargs) -> tqVisionTransformer:
     """ ViT-Base (ViT-B/32) from original paper (https://arxiv.org/abs/2010.11929).
     ImageNet-1k weights fine-tuned from in21k, source https://github.com/google-research/vision_transformer.
     """
     model_args = dict(patch_size=32, embed_dim=768, depth=12, num_heads=12)
-    model = _create_vision_transformer('vqvit_base_patch32_224', pretrained=pretrained, **dict(model_args, **kwargs))
+    model = _create_vision_transformer('tqvit_base_patch32_224', pretrained=pretrained, **dict(model_args, **kwargs))
     return model
 
 
 @register_model
-def vqvit_base_patch32_384(pretrained=False, **kwargs) -> vqVisionTransformer:
+def tqvit_base_patch32_384(pretrained=False, **kwargs) -> tqVisionTransformer:
     """ ViT-Base model (ViT-B/32) from original paper (https://arxiv.org/abs/2010.11929).
     ImageNet-1k weights fine-tuned from in21k @ 384x384, source https://github.com/google-research/vision_transformer.
     """
     model_args = dict(patch_size=32, embed_dim=768, depth=12, num_heads=12)
-    model = _create_vision_transformer('vqvit_base_patch32_384', pretrained=pretrained, **dict(model_args, **kwargs))
+    model = _create_vision_transformer('tqvit_base_patch32_384', pretrained=pretrained, **dict(model_args, **kwargs))
     return model
 
 
 @register_model
-def vqvit_base_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+def tqvit_base_patch16_224(pretrained=False, **kwargs) -> tqVisionTransformer:
     """ ViT-Base (ViT-B/16) from original paper (https://arxiv.org/abs/2010.11929).
     ImageNet-1k weights fine-tuned from in21k @ 224x224, source https://github.com/google-research/vision_transformer.
     """
     model_args = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12)
-    model = _create_vision_transformer('vqvit_base_patch16_224', pretrained=pretrained, **dict(model_args, **kwargs))
+    model = _create_vision_transformer('tqvit_base_patch16_224', pretrained=pretrained, **dict(model_args, **kwargs))
     return model
 
 
 # @register_model
-# def vit_base_patch16_384(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_base_patch16_384(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Base model (ViT-B/16) from original paper (https://arxiv.org/abs/2010.11929).
 #     ImageNet-1k weights fine-tuned from in21k @ 384x384, source https://github.com/google-research/vision_transformer.
 #     """
@@ -2123,7 +2123,7 @@ def vqvit_base_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_base_patch8_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_base_patch8_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Base (ViT-B/8) from original paper (https://arxiv.org/abs/2010.11929).
 #     ImageNet-1k weights fine-tuned from in21k @ 224x224, source https://github.com/google-research/vision_transformer.
 #     """
@@ -2133,16 +2133,16 @@ def vqvit_base_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 @register_model
-def vqvit_large_patch32_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+def tqvit_large_patch32_224(pretrained=False, **kwargs) -> tqVisionTransformer:
     """ ViT-Large model (ViT-L/32) from original paper (https://arxiv.org/abs/2010.11929). No pretrained weights.
     """
     model_args = dict(patch_size=32, embed_dim=1024, depth=24, num_heads=16)
-    model = _create_vision_transformer('vqvit_large_patch32_224', pretrained=pretrained, **dict(model_args, **kwargs))
+    model = _create_vision_transformer('tqvit_large_patch32_224', pretrained=pretrained, **dict(model_args, **kwargs))
     return model
 
 
 # @register_model
-# def vit_large_patch32_384(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_large_patch32_384(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Large model (ViT-L/32) from original paper (https://arxiv.org/abs/2010.11929).
 #     ImageNet-1k weights fine-tuned from in21k @ 384x384, source https://github.com/google-research/vision_transformer.
 #     """
@@ -2152,17 +2152,17 @@ def vqvit_large_patch32_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 @register_model
-def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+def tqvit_large_patch16_224(pretrained=False, **kwargs) -> tqVisionTransformer:
     """ ViT-Large model (ViT-L/16) from original paper (https://arxiv.org/abs/2010.11929).
     ImageNet-1k weights fine-tuned from in21k @ 224x224, source https://github.com/google-research/vision_transformer.
     """
     model_args = dict(patch_size=16, embed_dim=1024, depth=24, num_heads=16)
-    model = _create_vision_transformer('vqvit_large_patch16_224', pretrained=pretrained, **dict(model_args, **kwargs))
+    model = _create_vision_transformer('tqvit_large_patch16_224', pretrained=pretrained, **dict(model_args, **kwargs))
     return model
 
 
 # @register_model
-# def vit_large_patch16_384(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_large_patch16_384(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Large model (ViT-L/16) from original paper (https://arxiv.org/abs/2010.11929).
 #     ImageNet-1k weights fine-tuned from in21k @ 384x384, source https://github.com/google-research/vision_transformer.
 #     """
@@ -2172,7 +2172,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_large_patch14_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_large_patch14_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Large model (ViT-L/14)
 #     """
 #     model_args = dict(patch_size=14, embed_dim=1024, depth=24, num_heads=16)
@@ -2181,7 +2181,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_huge_patch14_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_huge_patch14_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Huge model (ViT-H/14) from original paper (https://arxiv.org/abs/2010.11929).
 #     """
 #     model_args = dict(patch_size=14, embed_dim=1280, depth=32, num_heads=16)
@@ -2190,7 +2190,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_giant_patch14_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_giant_patch14_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Giant (little-g) model (ViT-g/14) from `Scaling Vision Transformers` - https://arxiv.org/abs/2106.04560
 #     """
 #     model_args = dict(patch_size=14, embed_dim=1408, mlp_ratio=48/11, depth=40, num_heads=16)
@@ -2199,7 +2199,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_gigantic_patch14_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_gigantic_patch14_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Gigantic (big-G) model (ViT-G/14) from `Scaling Vision Transformers` - https://arxiv.org/abs/2106.04560
 #     """
 #     model_args = dict(patch_size=14, embed_dim=1664, mlp_ratio=64/13, depth=48, num_heads=16)
@@ -2209,7 +2209,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_base_patch16_224_miil(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_base_patch16_224_miil(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Base (ViT-B/16) from original paper (https://arxiv.org/abs/2010.11929).
 #     Weights taken from: https://github.com/Alibaba-MIIL/ImageNet21K
 #     """
@@ -2220,7 +2220,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_medium_patch16_gap_240(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_medium_patch16_gap_240(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Medium (ViT-M/16) w/o class token, w/ avg-pool @ 240x240
 #     """
 #     model_args = dict(
@@ -2232,7 +2232,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_medium_patch16_gap_256(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_medium_patch16_gap_256(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Medium (ViT-M/16) w/o class token, w/ avg-pool @ 256x256
 #     """
 #     model_args = dict(
@@ -2244,7 +2244,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_medium_patch16_gap_384(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_medium_patch16_gap_384(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Medium (ViT-M/16) w/o class token, w/ avg-pool @ 384x384
 #     """
 #     model_args = dict(
@@ -2256,7 +2256,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_base_patch16_gap_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_base_patch16_gap_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Base (ViT-B/16) w/o class token, w/ avg-pool @ 224x224
 #     """
 #     model_args = dict(
@@ -2267,7 +2267,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_huge_patch14_gap_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_huge_patch14_gap_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Huge model (ViT-H/14) w/ no class token, avg pool
 #     """
 #     model_args = dict(
@@ -2278,7 +2278,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_huge_patch16_gap_448(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_huge_patch16_gap_448(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Huge model (ViT-H/16) w/ no class token, avg pool @ 448x448
 #     """
 #     model_args = dict(
@@ -2289,7 +2289,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_giant_patch16_gap_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_giant_patch16_gap_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Giant (little-gg) model (ViT-g/16) w/ no class token, avg pool
 #     """
 #     model_args = dict(
@@ -2301,7 +2301,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_base_patch32_clip_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_base_patch32_clip_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-B/32 CLIP image tower @ 224x224
 #     """
 #     model_args = dict(
@@ -2312,7 +2312,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_base_patch32_clip_256(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_base_patch32_clip_256(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-B/32 CLIP image tower @ 256x256
 #     """
 #     model_args = dict(
@@ -2323,7 +2323,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_base_patch32_clip_384(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_base_patch32_clip_384(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-B/32 CLIP image tower @ 384x384
 #     """
 #     model_args = dict(
@@ -2334,7 +2334,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_base_patch32_clip_448(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_base_patch32_clip_448(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-B/32 CLIP image tower @ 448x448
 #     """
 #     model_args = dict(
@@ -2345,7 +2345,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_base_patch16_clip_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_base_patch16_clip_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-B/16 CLIP image tower
 #     """
 #     model_args = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, pre_norm=True, norm_layer=nn.LayerNorm)
@@ -2355,7 +2355,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_base_patch16_clip_384(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_base_patch16_clip_384(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-B/16 CLIP image tower @ 384x384
 #     """
 #     model_args = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, pre_norm=True, norm_layer=nn.LayerNorm)
@@ -2365,7 +2365,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_large_patch14_clip_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_large_patch14_clip_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Large model (ViT-L/14) CLIP image tower
 #     """
 #     model_args = dict(patch_size=14, embed_dim=1024, depth=24, num_heads=16, pre_norm=True, norm_layer=nn.LayerNorm)
@@ -2375,7 +2375,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_large_patch14_clip_336(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_large_patch14_clip_336(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Large model (ViT-L/14) CLIP image tower @ 336x336
 #     """
 #     model_args = dict(patch_size=14, embed_dim=1024, depth=24, num_heads=16, pre_norm=True, norm_layer=nn.LayerNorm)
@@ -2385,7 +2385,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_huge_patch14_clip_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_huge_patch14_clip_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Huge model (ViT-H/14) CLIP image tower.
 #     """
 #     model_args = dict(patch_size=14, embed_dim=1280, depth=32, num_heads=16, pre_norm=True, norm_layer=nn.LayerNorm)
@@ -2395,7 +2395,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_huge_patch14_clip_336(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_huge_patch14_clip_336(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Huge model (ViT-H/14) CLIP image tower @ 336x336
 #     """
 #     model_args = dict(patch_size=14, embed_dim=1280, depth=32, num_heads=16, pre_norm=True, norm_layer=nn.LayerNorm)
@@ -2405,7 +2405,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_huge_patch14_clip_378(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_huge_patch14_clip_378(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Huge model (ViT-H/14) CLIP image tower @ 378x378
 #     """
 #     model_args = dict(patch_size=14, embed_dim=1280, depth=32, num_heads=16, pre_norm=True, norm_layer=nn.LayerNorm)
@@ -2415,7 +2415,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_giant_patch14_clip_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_giant_patch14_clip_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Giant (little-g) model (ViT-g/14) from `Scaling Vision Transformers` - https://arxiv.org/abs/2106.04560
 #     Pretrained weights from CLIP image tower.
 #     """
@@ -2427,7 +2427,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_gigantic_patch14_clip_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_gigantic_patch14_clip_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-bigG model (ViT-G/14) from `Scaling Vision Transformers` - https://arxiv.org/abs/2106.04560
 #     Pretrained weights from CLIP image tower.
 #     """
@@ -2439,7 +2439,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_base_patch32_clip_quickgelu_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_base_patch32_clip_quickgelu_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-B/32 CLIP image tower @ 224x224
 #     """
 #     model_args = dict(
@@ -2451,7 +2451,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_base_patch16_clip_quickgelu_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_base_patch16_clip_quickgelu_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-B/16 CLIP image tower w/ QuickGELU act
 #     """
 #     model_args = dict(
@@ -2463,7 +2463,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_large_patch14_clip_quickgelu_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_large_patch14_clip_quickgelu_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Large model (ViT-L/14) CLIP image tower w/ QuickGELU act
 #     """
 #     from timm.layers import get_act_layer
@@ -2476,7 +2476,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_large_patch14_clip_quickgelu_336(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_large_patch14_clip_quickgelu_336(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Large model (ViT-L/14) CLIP image tower @ 336x336 w/ QuickGELU act
 #     """
 #     model_args = dict(
@@ -2488,7 +2488,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_huge_patch14_clip_quickgelu_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_huge_patch14_clip_quickgelu_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Huge model (ViT-H/14) CLIP image tower w/ QuickGELU act.
 #     """
 #     model_args = dict(
@@ -2500,7 +2500,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_huge_patch14_clip_quickgelu_378(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_huge_patch14_clip_quickgelu_378(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Huge model (ViT-H/14) CLIP image tower @ 378x378 w/ QuickGELU act
 #     """
 #     model_args = dict(
@@ -2514,7 +2514,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 # # Experimental models below
 
 # @register_model
-# def vit_base_patch32_plus_256(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_base_patch32_plus_256(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Base (ViT-B/32+)
 #     """
 #     model_args = dict(patch_size=32, embed_dim=896, depth=12, num_heads=14, init_values=1e-5)
@@ -2524,7 +2524,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_base_patch16_plus_240(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_base_patch16_plus_240(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Base (ViT-B/16+)
 #     """
 #     model_args = dict(patch_size=16, embed_dim=896, depth=12, num_heads=14, init_values=1e-5)
@@ -2534,7 +2534,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_base_patch16_rpn_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_base_patch16_rpn_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Base (ViT-B/16) w/ residual post-norm
 #     """
 #     model_args = dict(
@@ -2546,7 +2546,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_small_patch16_36x1_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_small_patch16_36x1_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Base w/ LayerScale + 36 x 1 (36 block serial) config. Experimental, may remove.
 #     Based on `Three things everyone should know about Vision Transformers` - https://arxiv.org/abs/2203.09795
 #     Paper focuses on 24x2 + 48x1 for 'Small' width but those are extremely slow.
@@ -2558,7 +2558,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_small_patch16_18x2_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_small_patch16_18x2_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Small w/ LayerScale + 18 x 2 (36 block parallel) config. Experimental, may remove.
 #     Based on `Three things everyone should know about Vision Transformers` - https://arxiv.org/abs/2203.09795
 #     Paper focuses on 24x2 + 48x1 for 'Small' width but those are extremely slow.
@@ -2571,7 +2571,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_base_patch16_18x2_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_base_patch16_18x2_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Base w/ LayerScale + 18 x 2 (36 block parallel) config. Experimental, may remove.
 #     Based on `Three things everyone should know about Vision Transformers` - https://arxiv.org/abs/2203.09795
 #     """
@@ -2583,7 +2583,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def eva_large_patch14_196(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def eva_large_patch14_196(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ EVA-large model https://arxiv.org/abs/2211.07636 /via MAE MIM pretrain"""
 #     model_args = dict(patch_size=14, embed_dim=1024, depth=24, num_heads=16, global_pool='avg')
 #     model = _create_vision_transformer(
@@ -2592,7 +2592,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def eva_large_patch14_336(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def eva_large_patch14_336(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ EVA-large model https://arxiv.org/abs/2211.07636 via MAE MIM pretrain"""
 #     model_args = dict(patch_size=14, embed_dim=1024, depth=24, num_heads=16, global_pool='avg')
 #     model = _create_vision_transformer('eva_large_patch14_336', pretrained=pretrained, **dict(model_args, **kwargs))
@@ -2600,7 +2600,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def flexivit_small(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def flexivit_small(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ FlexiViT-Small
 #     """
 #     model_args = dict(patch_size=16, embed_dim=384, depth=12, num_heads=6, no_embed_class=True)
@@ -2609,7 +2609,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def flexivit_base(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def flexivit_base(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ FlexiViT-Base
 #     """
 #     model_args = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, no_embed_class=True)
@@ -2618,7 +2618,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def flexivit_large(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def flexivit_large(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ FlexiViT-Large
 #     """
 #     model_args = dict(patch_size=16, embed_dim=1024, depth=24, num_heads=16, no_embed_class=True)
@@ -2627,7 +2627,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_base_patch16_xp_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_base_patch16_xp_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Large model (ViT-L/14) w/ parallel blocks and qk norm enabled.
 #     """
 #     model_args = dict(
@@ -2640,7 +2640,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_large_patch14_xp_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_large_patch14_xp_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Large model (ViT-L/14) w/ parallel blocks and qk norm enabled.
 #     """
 #     model_args = dict(
@@ -2653,7 +2653,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_huge_patch14_xp_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_huge_patch14_xp_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-Huge model (ViT-H/14) w/ parallel blocks and qk norm enabled.
 #     """
 #     model_args = dict(
@@ -2666,7 +2666,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_small_patch14_dinov2(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_small_patch14_dinov2(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-S/14 for DINOv2
 #     """
 #     model_args = dict(patch_size=14, embed_dim=384, depth=12, num_heads=6, init_values=1e-5, img_size=518)
@@ -2676,7 +2676,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_base_patch14_dinov2(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_base_patch14_dinov2(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-B/14 for DINOv2
 #     """
 #     model_args = dict(patch_size=14, embed_dim=768, depth=12, num_heads=12, init_values=1e-5, img_size=518)
@@ -2686,7 +2686,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_large_patch14_dinov2(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_large_patch14_dinov2(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-L/14 for DINOv2
 #     """
 #     model_args = dict(patch_size=14, embed_dim=1024, depth=24, num_heads=16, init_values=1e-5, img_size=518)
@@ -2696,7 +2696,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_giant_patch14_dinov2(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_giant_patch14_dinov2(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-G/14 for DINOv2
 #     """
 #     # The hidden_features of SwiGLU is calculated by:
@@ -2713,7 +2713,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_small_patch14_reg4_dinov2(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_small_patch14_reg4_dinov2(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-S/14 for DINOv2 w/ 4 registers
 #     """
 #     model_args = dict(
@@ -2726,7 +2726,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_base_patch14_reg4_dinov2(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_base_patch14_reg4_dinov2(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-B/14 for DINOv2 w/ 4 registers
 #     """
 #     model_args = dict(
@@ -2739,7 +2739,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_large_patch14_reg4_dinov2(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_large_patch14_reg4_dinov2(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-L/14 for DINOv2 w/ 4 registers
 #     """
 #     model_args = dict(
@@ -2752,7 +2752,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_giant_patch14_reg4_dinov2(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_giant_patch14_reg4_dinov2(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     """ ViT-G/14 for DINOv2
 #     """
 #     # The hidden_features of SwiGLU is calculated by:
@@ -2769,7 +2769,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_base_patch16_siglip_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_base_patch16_siglip_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     model_args = dict(
 #         patch_size=16, embed_dim=768, depth=12, num_heads=12, class_token=False, global_pool='map',
 #     )
@@ -2779,7 +2779,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_base_patch16_siglip_256(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_base_patch16_siglip_256(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     model_args = dict(
 #         patch_size=16, embed_dim=768, depth=12, num_heads=12, class_token=False, global_pool='map',
 #     )
@@ -2789,7 +2789,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_base_patch16_siglip_384(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_base_patch16_siglip_384(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     model_args = dict(
 #         patch_size=16, embed_dim=768, depth=12, num_heads=12, class_token=False, global_pool='map',
 #     )
@@ -2799,7 +2799,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_base_patch16_siglip_512(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_base_patch16_siglip_512(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     model_args = dict(
 #         patch_size=16, embed_dim=768, depth=12, num_heads=12, class_token=False, global_pool='map',
 #     )
@@ -2809,7 +2809,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_large_patch16_siglip_256(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_large_patch16_siglip_256(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     model_args = dict(
 #         patch_size=16, embed_dim=1024, depth=24, num_heads=16, class_token=False, global_pool='map',
 #     )
@@ -2819,7 +2819,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_large_patch16_siglip_384(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_large_patch16_siglip_384(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     model_args = dict(
 #         patch_size=16, embed_dim=1024, depth=24, num_heads=16, class_token=False, global_pool='map',
 #     )
@@ -2829,7 +2829,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_so400m_patch14_siglip_224(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_so400m_patch14_siglip_224(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     model_args = dict(
 #         patch_size=14, embed_dim=1152, depth=27, num_heads=16, mlp_ratio=3.7362, class_token=False, global_pool='map',
 #     )
@@ -2839,7 +2839,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_so400m_patch14_siglip_384(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_so400m_patch14_siglip_384(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     model_args = dict(
 #         patch_size=14, embed_dim=1152, depth=27, num_heads=16, mlp_ratio=3.7362, class_token=False, global_pool='map',
 #     )
@@ -2849,7 +2849,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_medium_patch16_reg4_256(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_medium_patch16_reg4_256(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     model_args = dict(
 #         patch_size=16, embed_dim=512, depth=12, num_heads=8, class_token=True,
 #         no_embed_class=True, reg_tokens=4,
@@ -2860,7 +2860,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_medium_patch16_reg4_gap_256(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_medium_patch16_reg4_gap_256(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     model_args = dict(
 #         patch_size=16, embed_dim=512, depth=12, num_heads=8,
 #         class_token=False, no_embed_class=True, reg_tokens=4, global_pool='avg',
@@ -2871,7 +2871,7 @@ def vqvit_large_patch16_224(pretrained=False, **kwargs) -> vqVisionTransformer:
 
 
 # @register_model
-# def vit_base_patch16_reg8_gap_256(pretrained=False, **kwargs) -> vqVisionTransformer:
+# def vit_base_patch16_reg8_gap_256(pretrained=False, **kwargs) -> tqVisionTransformer:
 #     model_args = dict(
 #         patch_size=16, embed_dim=768, depth=12, num_heads=12, class_token=False,
 #         no_embed_class=True, global_pool='avg', reg_tokens=8,

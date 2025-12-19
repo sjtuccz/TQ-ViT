@@ -58,7 +58,7 @@ from .senet import *
 from .sequencer import *
 from .sknet import *
 from .swin_transformer import *
-from .swin_transformer_vq import *
+from .swin_transformer_tq import *
 from .swin_transformer_v2 import *
 from .swin_transformer_v2_cr import *
 from .tiny_vit import *
@@ -68,12 +68,12 @@ from .twins import *
 from .vgg import *
 from .visformer import *
 from .vision_transformer import *
-from .vision_transformer_vq import *
+from .vision_transformer_tq import *
 from .vision_transformer_hybrid import *
 from .vision_transformer_relpos import *
 from .vision_transformer_sam import *
 from .poolformer import *
-from .poolformer_vq import *
+from .poolformer_tq import *
 from .volo import *
 from .vovnet import *
 from .xception import *

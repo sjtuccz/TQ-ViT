@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-""" VQ-ViT Training Script
+""" TQ-ViT Training Script
 Rewritten from the train.py script of the timm library
 
 for example:
-CUDA_VISIBLE_DEVICES=1 python trainvq.py -j 16 
---tqtype tfsq 
+CUDA_VISIBLE_DEVICES=1 python traintq.py -j 16 
+--tqtype ttq 
 --dict-dim 4
---fsq-level 3 3 3 3
+--tq-level 3 3 3 3
 --FLfn cos 
 --Disfn DKD 
 --klloss-weight 4.0 
 --featureloss-weight 0.0 
---model vqvit_tiny_patch16_224 
+--model tqvit_tiny_patch16_224 
 --teacher-model vit_tiny_patch16_224 
 --output  
 --dataset imagenet1k 
@@ -34,7 +34,7 @@ CUDA_VISIBLE_DEVICES=1 python trainvq.py -j 16
 --mixup 0.0 --cutmix 0.0 --smoothing 0.0 --drop-path 0.0 
 -b 1024 --grad-accum-steps 4  
 --lr 4e-4 --opt adamw --weight-decay 0.1 
---model-kwargs fsq_Tinit=-1
+--model-kwargs tq_Tinit=-1
 """
 import argparse
 import logging
@@ -58,7 +58,7 @@ from timm.data import create_dataset, create_loader, resolve_data_config, Mixup,
 from timm.layers import convert_splitbn_model, convert_sync_batchnorm, set_fast_norm
 from timm.loss import JsdCrossEntropy, SoftTargetCrossEntropy, BinaryCrossEntropy, LabelSmoothingCrossEntropy
 from timm.models import create_model, create_teacher_model,safe_model_name, resume_checkpoint, load_checkpoint, model_parameters
-from timm.optim import create_optimizer_v2, optimizer_kwargs, param_group_fn_with_weight_decay, param_group_fn_with_weight_decay_vq
+from timm.optim import create_optimizer_v2, optimizer_kwargs, param_group_fn_with_weight_decay, param_group_fn_with_weight_decay_tq
 from timm.scheduler import create_scheduler_v2, scheduler_kwargs
 from timm.utils import ApexScaler, NativeScaler
 from timm.data.constants import CIFAR10_MEAN, CIFAR10_STD, CIFAR100_TRAIN_MEAN, CIFAR100_TRAIN_STD, TINY_IMAGENET_MEAN, TINY_IMAGENET_STD,IMAGENET_DEFAULT_MEAN,IMAGENET_DEFAULT_STD
@@ -130,23 +130,23 @@ group = parser.add_argument_group('Model parameters')
 group.add_argument('--model', default='vit_small_patch32_224', type=str, metavar='MODEL',
                    help='Name of model to train (default: "resnet50")')
 
-group.add_argument('--tqtype', default='tfsq', type=str, metavar='VQ',
-                   help='tqtype: vq or fsq')
-group.add_argument('--fsq-level', type=int, nargs='+', default=[3,3,3,3], metavar='FSQLEVEL',
-                   help='fsq level')
+group.add_argument('--tqtype', default='ttq', type=str, metavar='TQ',
+                   help='tqtype: tq or tq')
+group.add_argument('--tq-level', type=int, nargs='+', default=[3,3,3,3], metavar='TQLEVEL',
+                   help='tq level')
 
 group.add_argument('--kmeans-init-code', action='store_true', default=False,
                    help='vit feature kmeans init codebook. (default: False)')
-group.add_argument('--init-fsqt', action='store_true', default=False,
-                   help='vit feature init T of fsq if using fsq. (default: False)')
-group.add_argument('--freeze-wo-vq', action='store_true', default=False,
-                   help=' freeze all except vq block. (default: False)')
+group.add_argument('--init-tqt', action='store_true', default=False,
+                   help='vit feature init T of tq if using tq. (default: False)')
+group.add_argument('--freeze-wo-tq', action='store_true', default=False,
+                   help=' freeze all except tq block. (default: False)')
 group.add_argument('--shared-codebook', action='store_true', default=False,
-                   help=' share the codebook across all VQBlock. (default: False)')
-parser.add_argument('--dict-num', default=256, type=int, metavar='vqvit_dict',
-                    help='vqvit dict size')
-parser.add_argument('--dict-dim', default=2, type=int, metavar='vqvit_dict_dim',
-                    help='vqvit dict dim')
+                   help=' share the codebook across all TQBlock. (default: False)')
+parser.add_argument('--dict-num', default=256, type=int, metavar='tqvit_dict',
+                    help='tqvit dict size')
+parser.add_argument('--dict-dim', default=2, type=int, metavar='tqvit_dict_dim',
+                    help='tqvit dict dim')
 parser.add_argument('--teacher-model', default=None, type=str, metavar='TEACHER-MODEL',
                     help='Name of model to train (default: "countception"')
 group.add_argument('--pretrained', action='store_true', default=False,
@@ -457,44 +457,44 @@ def init_codebook(model, feat_list):
     print('===============================================================init codebook using kmeans vit features')
     if isinstance(feat_list[0], (list,tuple)):
         for block, feat in zip(model.blocks, feat_list):
-            # for vq qkv , vq proj
-            device = block.vq.embedding.weight.device
+            # for tq qkv , tq proj
+            device = block.tq.embedding.weight.device
             qkv_feat = feat[0]
             proj_feat = feat[1]
-            qkv_centroids, counts = kmeans_pca_fit_dim(qkv_feat, block.vq.embedding.weight.data.shape[0], block.vq.embedding.weight.data.shape[1],use_cosine_sim=True)
-            block.vq.embedding.weight.data = qkv_centroids.to(device)
+            qkv_centroids, counts = kmeans_pca_fit_dim(qkv_feat, block.tq.embedding.weight.data.shape[0], block.tq.embedding.weight.data.shape[1],use_cosine_sim=True)
+            block.tq.embedding.weight.data = qkv_centroids.to(device)
 
-            # proj_centroids, counts = kmeans_pca_fit_dim(proj_feat, block.attn.vq.embedding.weight.data.shape[0], block.attn.vq.embedding.weight.data.shape[1],use_cosine_sim=True)
-            # block.attn.vq.embedding.weight.data = proj_centroids.to(device)
+            # proj_centroids, counts = kmeans_pca_fit_dim(proj_feat, block.attn.tq.embedding.weight.data.shape[0], block.attn.tq.embedding.weight.data.shape[1],use_cosine_sim=True)
+            # block.attn.tq.embedding.weight.data = proj_centroids.to(device)
 
-            # # for vq qkv , vq ffn
-            # device = block.vq.embedding.weight.device
+            # # for tq qkv , tq ffn
+            # device = block.tq.embedding.weight.device
             # attn_feat = feat[0]
             # ffn_feat = feat[1]
-            # ffn_centroids, counts = kmeans_pca_fit_dim(ffn_feat, block.vq.embedding.weight.data.shape[0], block.vq.embedding.weight.data.shape[1],use_cosine_sim=True)
-            # block.vq.embedding.weight.data = ffn_centroids.to(device)
+            # ffn_centroids, counts = kmeans_pca_fit_dim(ffn_feat, block.tq.embedding.weight.data.shape[0], block.tq.embedding.weight.data.shape[1],use_cosine_sim=True)
+            # block.tq.embedding.weight.data = ffn_centroids.to(device)
 
-            # attn_centroids, counts = kmeans_pca_fit_dim(attn_feat, block.attnvq.embedding.weight.data.shape[0], block.attnvq.embedding.weight.data.shape[1],use_cosine_sim=True)
-            # block.attnvq.embedding.weight.data = attn_centroids.to(device)
+            # attn_centroids, counts = kmeans_pca_fit_dim(attn_feat, block.attntq.embedding.weight.data.shape[0], block.attntq.embedding.weight.data.shape[1],use_cosine_sim=True)
+            # block.attntq.embedding.weight.data = attn_centroids.to(device)
     else:
         for block, feat in zip(model.blocks, feat_list):
             
-            # device = block.vq.embedding.weight.device
-            # centroids, counts = kmeans_pca_fit_dim(feat, block.vq.embedding.weight.data.shape[0], block.vq.embedding.weight.data.shape[1],use_cosine_sim=True)
-            # block.vq.embedding.weight.data = centroids.to(device)
+            # device = block.tq.embedding.weight.device
+            # centroids, counts = kmeans_pca_fit_dim(feat, block.tq.embedding.weight.data.shape[0], block.tq.embedding.weight.data.shape[1],use_cosine_sim=True)
+            # block.tq.embedding.weight.data = centroids.to(device)
 
-            device = block.attn.vq.embedding.weight.device
-            attn_centroids, counts = kmeans_pca_fit_dim(feat, block.attn.vq.embedding.weight.data.shape[0], block.attn.vq.embedding.weight.data.shape[1],use_cosine_sim=True)
-            block.attn.vq.embedding.weight.data = attn_centroids.to(device)
+            device = block.attn.tq.embedding.weight.device
+            attn_centroids, counts = kmeans_pca_fit_dim(feat, block.attn.tq.embedding.weight.data.shape[0], block.attn.tq.embedding.weight.data.shape[1],use_cosine_sim=True)
+            block.attn.tq.embedding.weight.data = attn_centroids.to(device)
 
-def init_fsqt(model, feat_list):
+def init_tqt(model, feat_list):
     
-    print('===============================================================init T of fsq using vit features')
+    print('===============================================================init T of tq using vit features')
     step = 0.1
     t_range = (torch.arange(1, 101) * step).round(decimals=1).to(feat_list[0].device)  # 1→0.1, 2→0.2,..., 50→5.0
     for block, feat in zip(model.blocks, feat_list):
-        fsq = block.vq
-        codebook_dim = block.vq.codebook_dim
+        tq = block.tq
+        codebook_dim = block.tq.codebook_dim
         # max_value = feat.max()
         # min_value = feat.min()
         # mean = feat.mean()
@@ -512,13 +512,13 @@ def init_fsqt(model, feat_list):
 
         error_recoed = []
         for i, t in enumerate(t_range):
-            fsq.T = t
-            output1 = fsq.quantize(input)
+            tq.T = t
+            output1 = tq.quantize(input)
             error = torch.abs(output1 - input).sum()
             error_recoed.append(error)
             # print(f'i: {i}, error: {error}, t: {t}')
         t_optimal = t_range[error_recoed.index(min(error_recoed))]
-        fsq.T = t_optimal
+        tq.T = t_optimal
         print(f't_optimal: {t_optimal}')
 
         
@@ -618,22 +618,22 @@ def main():
         strict=False,
         dic_n=args.dict_num, dic_dim=args.dict_dim,
         tq_type=args.tqtype,
-        fsq_level=args.fsq_level,
+        tq_level=args.tq_level,
         **args.model_kwargs,
     )
     if args.shared_codebook:
         model.use_shared_codebook()
 
-    def freeze_but_keep_VQ_grad(model):
-        print("freeze VQ Block")
+    def freeze_but_keep_TQ_grad(model):
+        print("freeze TQ Block")
         for name, param in model.named_parameters():
-            if 'vq' in name or 'head' in name:
+            if 'tq' in name or 'head' in name:
                 param.requires_grad = True
             else:
                 param.requires_grad = False 
-    if args.freeze_wo_vq:
-        print('freezing all except vq')
-        freeze_but_keep_VQ_grad(model)
+    if args.freeze_wo_tq:
+        print('freezing all except tq')
+        freeze_but_keep_TQ_grad(model)
 
     init_teacher_checkpoint = (args.teacher_checkpoint or args.initial_checkpoint) if not args.teacher_pretrained else None
     teacher_model = None
@@ -730,7 +730,7 @@ def main():
         print('using pretrained finetune, In addition to the head layer, the rest of the layers loaded with pre-training weights use a smaller learning rate, If lr_decay==0, freeze the pre-training layer')
         optimizer = create_optimizer_v2(
             model,
-            param_group_fn=param_group_fn_with_weight_decay_vq,
+            param_group_fn=param_group_fn_with_weight_decay_tq,
             **optimizer_kwargs(cfg=args),
             **args.opt_kwargs,
         )
@@ -889,7 +889,7 @@ def main():
         worker_seeding=args.worker_seeding,
     )
     loader_init = None
-    if args.kmeans_init_code or args.init_fsqt:
+    if args.kmeans_init_code or args.init_tqt:
         loader_init = create_loader(
             dataset_train,
             input_size=data_config['input_size'],
@@ -1200,10 +1200,10 @@ def train_one_epoch(
             if teacher_model:
                 with torch.no_grad():
                     teacher_output, init_feat_list = teacher_model(input,init_codebook_feat=True)
-            if args.tqtype == 'vq' and args.kmeans_init_code:
+            if args.tqtype == 'tq' and args.kmeans_init_code:
                 init_codebook(model,init_feat_list)
-            elif args.tqtype == 'fsq' and args.init_fsqt:
-                init_fsqt(model,init_feat_list)
+            elif args.tqtype == 'tq' and args.init_tqt:
+                init_tqt(model,init_feat_list)
             break
 
     for batch_idx, (input, target) in enumerate(loader):
