@@ -31,62 +31,13 @@ from ._manipulate import named_apply, checkpoint_seq, adapt_input_conv
 from ._registry import generate_default_cfgs, register_model, register_model_deprecations
 
 from timm.models.vectorquantize import choose_tq
-
+from timm.models.vision_transformer import Attention
 __all__ = ['TQ_VisionTransformer']  # model_registry will add each entrypoint fn to this
 
 
 _logger = logging.getLogger(__name__)
 import random
 import numpy as np
-class Attention(nn.Module):
-    fused_attn: Final[bool]
-
-    def __init__(
-            self,
-            dim,
-            num_heads=8,
-            qkv_bias=False,
-            qk_norm=False,
-            attn_drop=0.,
-            proj_drop=0.,
-            norm_layer=nn.LayerNorm,
-    ):
-        super().__init__()
-        assert dim % num_heads == 0, 'dim should be divisible by num_heads'
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.scale = self.head_dim ** -0.5
-        self.fused_attn = use_fused_attn()
-
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
-        self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
-        self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop)
-
-    def forward(self, x):
-        B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv.unbind(0)
-        q, k = self.q_norm(q), self.k_norm(k)
-        # print(f'Attention q mean:{q.mean().item()}, k mean:{k.mean().item()} , q std: {q.std().item()}, , k std: {k.std().item()}, qk std:{(q @ k.transpose(-2, -1)).std().item()}, scale:{self.scale}   ')
-        if self.fused_attn:
-            x = F.scaled_dot_product_attention(
-                q, k, v,
-                dropout_p=self.attn_drop.p if self.training else 0.,
-            )
-        else:
-            q = q * self.scale
-            attn = q @ k.transpose(-2, -1)
-            attn = attn.softmax(dim=-1)
-            attn = self.attn_drop(attn)
-            x = attn @ v
-
-        x = x.transpose(1, 2).reshape(B, N, C)
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x
 
 class Attention_TQ(nn.Module):
     fused_attn: Final[bool]
@@ -439,7 +390,7 @@ class Block_TQ_FFN(nn.Module):
             x = self.drop_path2(x)
             x = x + feat0
             feat = x # 蒸馏位置4
-            return x, (feat0, feat)
+            return x
 
 class Block_TQ_ATTN(nn.Module):
 
@@ -466,6 +417,7 @@ class Block_TQ_ATTN(nn.Module):
     ):
         super().__init__()
         self.norm1 = norm_layer(dim)
+        # self.attn = Attention_TQ_qkv(
         self.attn = Attention_TQ(
             dim,
             num_heads=num_heads,
@@ -518,7 +470,7 @@ class Block_TQ_ATTN(nn.Module):
         x = self.drop_path2(x)
         x = x + input
         feat = x # 蒸馏位置4
-        return x, (feat0,feat)
+        return x
 class Block(nn.Module):
 
     def __init__(

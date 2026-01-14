@@ -77,7 +77,7 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x, init_codebook_feat=False):
+    def forward(self, x):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)
@@ -100,10 +100,10 @@ class Attention(nn.Module):
         init_feat = x
         x = self.proj(x)
         x = self.proj_drop(x)
-        if init_codebook_feat:
-            return x, init_feat
-        else:
-            return x
+        # if init_codebook_feat:
+        #     return x, init_feat
+        # else:
+        return x
 
 
 class LayerScale(nn.Module):
@@ -722,7 +722,7 @@ class VisionTransformer(nn.Module):
         x = self.head_drop(x)
         return x if pre_logits else self.head(x)
 
-    def forward(self, x, is_feat=False, init_codebook_feat = False):
+    def forward(self, x):
         feat=list()
         init_feat_list = list()
         # x = self.forward_features(x,is_feat)
@@ -735,23 +735,23 @@ class VisionTransformer(nn.Module):
         #     x = checkpoint_seq(self.blocks, x)
         # else:
         for i in range(len(self.blocks)):
-            x= self.blocks[i](x, is_feat, init_codebook_feat)
-            if is_feat and isinstance(x, tuple) and len(x) > 1:
-                feat.append(x[1])
-                x= x[0]
-            elif init_codebook_feat and isinstance(x, tuple) and len(x) > 1:
-                init_feat_list.append(x[1])
-                x= x[0]
-            elif isinstance(x, tuple):
+            x= self.blocks[i](x)
+            # if is_feat and isinstance(x, tuple) and len(x) > 1:
+            #     feat.append(x[1])
+            #     x= x[0]
+            # elif init_codebook_feat and isinstance(x, tuple) and len(x) > 1:
+            #     init_feat_list.append(x[1])
+            #     x= x[0]
+            if isinstance(x, tuple):
                 x= x[0]
         x = self.norm(x)
         x = self.forward_head(x)
-        if is_feat:
-            return x, feat
-        elif init_codebook_feat:
-            return x, init_feat_list
-        else:
-            return x
+        # if is_feat:
+        #     return x, feat
+        # elif init_codebook_feat:
+        #     return x, init_feat_list
+        # else:
+        return x
 
 
 def init_weights_vit_timm(module: nn.Module, name: str = ''):

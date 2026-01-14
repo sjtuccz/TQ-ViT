@@ -259,7 +259,7 @@ class tqWindowAttention(nn.Module):
 
         self.token_wise_rep = False
         self.qkv_tq = choose_tq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, tq_level=tq_level, tq_Tinit=tq_Tinit)
-        # self.proj_tq = choose_tq(tq_type=tq_type, dic_n=dic_n, dim=attn_dim, dic_dim=dic_dim, tq_level=tq_level, tq_Tinit=tq_Tinit)
+        self.proj_tq = choose_tq(tq_type=tq_type, dic_n=dic_n, dim=attn_dim, dic_dim=dic_dim, tq_level=tq_level, tq_Tinit=tq_Tinit)
         self.attn_dim = attn_dim
     def _get_rel_pos_bias(self) -> torch.Tensor:
         relative_position_bias = self.relative_position_bias_table[
@@ -299,15 +299,15 @@ class tqWindowAttention(nn.Module):
         x = attn @ v
 
         x = x.transpose(1, 2).reshape(B_, N, -1)
-        # z = self.proj_tq(x)
-        # if isinstance(z, tuple):
-        #     z= z[0]
-        # if self.token_wise_rep:
-        #     index_map = z
-        #     x = self.proj_codebook(index_map)
-        # else:
-        x = self.proj(x)
-        x = self.proj_drop(x)
+        z = self.proj_tq(x)
+        if isinstance(z, tuple):
+            z= z[0]
+        if self.token_wise_rep:
+            index_map = z
+            x = self.proj_codebook(index_map)
+        else:
+            x = self.proj(z)
+            x = self.proj_drop(x)
         return x
     
     def reparameterize(self):
@@ -329,29 +329,34 @@ class tqWindowAttention(nn.Module):
         )
         del self.qkv, self.scale
 
-        # self.proj_codebook = nn.Embedding(self.proj_tq.codebook_size, self.dim)
-        # fixed_codebook_proj = self.proj_tq.reparameterize()
-        # reped_codebook_proj = self.proj(fixed_codebook_proj)
-        # self.proj_codebook.weight.data.copy_(reped_codebook_proj)
-        # del self.proj
+        self.proj_codebook = nn.Embedding(self.proj_tq.codebook_size, self.dim)
+        fixed_codebook_proj = self.proj_tq.reparameterize()
+        reped_codebook_proj = self.proj(fixed_codebook_proj)
+        self.proj_codebook.weight.data.copy_(reped_codebook_proj)
+        del self.proj
 
     @torch.jit.ignore
     def flops(self, N):
          #N, window_size*window_size, C
          # calculate flops for 1 window with token length of N
         flops = 0
-        # dim up & dim down linear in qkv TQ block
+        # dim up & dim down linear in 2 TQ block
         if not self.token_wise_rep:
-            flops += 2 * N * self.dim * self.qkv_tq.codebook_dim            
-            flops += N * self.dim * 3 * self.dim # qkv = self.qkv(x)
+            flops += 2 * N * self.dim * self.qkv_tq.codebook_dim
+            flops += 2 * N * self.attn_dim * self.proj_tq.codebook_dim
+            # qkv = self.qkv(x)
+            flops += N * self.dim * 3 * self.dim
+            # attn = (q @ k.transpose(-2, -1))
+            flops += self.num_heads * N * (self.dim // self.num_heads) * N
+            #  x = (attn @ v)
+            flops += self.num_heads * N * N * (self.dim // self.num_heads)
+            # x = self.proj(x)
+            flops += N * self.dim * self.dim
         else:
             flops += N * self.dim * self.qkv_tq.codebook_dim
-        # attn = (q @ k.transpose(-2, -1))
-        flops += self.num_heads * N * (self.dim // self.num_heads) * N
-        #  x = (attn @ v)
-        flops += self.num_heads * N * N * (self.dim // self.num_heads)
-        # x = self.proj(x)
-        flops += N * self.dim * self.dim
+            flops += N * self.attn_dim * self.proj_tq.codebook_dim
+            flops += self.num_heads * N * (self.dim // self.num_heads) * N
+            flops += self.num_heads * N * N * (self.dim // self.num_heads)
         return flops
 
 class TQ_SwinTransformerBlock(nn.Module):
