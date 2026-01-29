@@ -363,7 +363,7 @@ class ToMeBlock_TQ_FFN(Block_TQ_FFN):
         x = self.norm2(x)
         if not self.training and self.token_wise_rep:
             embedding_index =  self.tq(x)
-            z_q = self.rep_codebook(embedding_index)
+            z_q = self.rep_codebook[embedding_index]
             z_q = z_q.view(input1.shape)
             return z_q+input1
         else:
@@ -430,12 +430,7 @@ class ToMeAttention(Attention):
             .reshape(B, N, 3, self.num_heads, C // self.num_heads)
             .permute(2, 0, 3, 1, 4)
         )
-        q, k, v = (
-            qkv[0],
-            qkv[1],
-            qkv[2],
-        )  # make torchscript happy (cannot use tensor as tuple)
-
+        q, k, v =torch.unbind(qkv,dim=0)
         attn = (q @ k.transpose(-2, -1)) * self.scale
 
         # Apply proportional attention
@@ -463,11 +458,9 @@ class ToMeAttention_TQ(Attention_TQ):
             B, N, C = x.shape
             
             embedding_index =  self.tq_qkv(x)
-            qkv = self.qkv_dict(embedding_index).reshape(B, N, 3, self.num_heads, self.head_dim)
-            q, k, v = qkv.unbind(dim=2)
-            q = q.permute(0, 2, 1, 3).contiguous()   # [B, num_heads, N, head_dim]
-            k = k.permute(0, 2, 1, 3).contiguous() 
-            v = v.permute(0, 2, 1, 3).contiguous() 
+            qkv = self.qkv_dict[embedding_index].reshape(B, N, 3, self.num_heads, self.head_dim)
+            qkv = qkv.permute(2,0,3,1,4).contiguous()   # [B, num_heads, N, head_dim]
+            q, k, v = qkv.unbind(dim=0)
         else:
             B, N, C = x.shape
             x = self.tq_qkv(x)
@@ -489,7 +482,7 @@ class ToMeAttention_TQ(Attention_TQ):
         x = x.transpose(1, 2).reshape(B, N, C)
         if self.token_wise_rep:
             embedding_index =  self.tq_proj(x)
-            x = self.proj_codebook(embedding_index)
+            x = self.proj_codebook[embedding_index]
         else:
             x = self.tq_proj(x)
             x = self.proj(x)

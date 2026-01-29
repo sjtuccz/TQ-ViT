@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """ TQ-ViT Training Script
 Rewritten from the train.py script of the timm library
+
+CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.run --nproc_per_node=2 --master_port=29577 trainvqvit.py -j 16 --tqtype TQ --dict-dim 4 --tq-level 3 3 3 3 --model tq_vit_small_patch32_224 --teacher-model vit_small_patch32_224 --output ../output/swin --dataset imagenet1k --initial-checkpoint ./pretrained_weights/vit_small_patch32_224.augreg_in21k_ft_in1k.pth  --amp -b 1024 --grad-accum-steps 2 --lr 8e-4 --mean 0.5 0.5 0.5 --std 0.5 0.5 0.5 --data-dir /media/mulan-data/Share/ccz/ImageNet2012/
+
 """
 import argparse
 import logging
@@ -80,7 +83,7 @@ parser.add_argument('data', nargs='?', metavar='DIR', const=None,
                     help='path to dataset (positional is *deprecated*, use --data-dir)')
 parser.add_argument('--data-dir', metavar='DIR',
                     help='path to dataset (root dir)')
-parser.add_argument('--dataset', metavar='NAME', default='',
+parser.add_argument('--dataset', metavar='NAME', default='imagenet1k',
                     help='dataset type + name ("<type>/<name>") (default: ImageFolder or ImageTar if empty)')
 group.add_argument('--train-split', metavar='NAME', default='train',
                    help='dataset train split (default: train)')
@@ -671,7 +674,7 @@ def main():
         else:
             if utils.is_primary(args):
                 _logger.info("Using native Torch DistributedDataParallel.")
-            model = NativeDDP(model, device_ids=[device], broadcast_buffers=not args.no_ddp_bb) #, find_unused_parameters=True
+            model = NativeDDP(model, device_ids=[device], broadcast_buffers=not args.no_ddp_bb)#, find_unused_parameters=True)
         # NOTE: EMA model does not need to be wrapped by DDP
 
     if args.torchcompile:
@@ -1084,6 +1087,16 @@ def train_one_epoch(
             with model.no_sync():
                 loss = _forward()
                 _backward(loss)
+                # unused_params = []
+                # for name, param in model.named_parameters():
+                #     if param.requires_grad and param.grad is None:
+                #         unused_params.append(name)
+                #         print(f"未使用的参数: {name}")
+                
+                # if unused_params:
+                #     print(f"\n发现 {len(unused_params)} 个未使用的参数:")
+                #     for name in unused_params:
+                #         print(f"  - {name}")
         else:
             loss = _forward()
             # for name, param in model.named_parameters():

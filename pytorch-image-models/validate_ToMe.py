@@ -165,22 +165,24 @@ parser.add_argument('--tome', action='store_true', default=False,
 parser.add_argument('--tome-r', type=int, default=8,
                     help='token merging ratio .')
 
-def add_attention_qkvMatDot_FLOPs(flops, model_name)-> int:
+def add_attention_qkvMatDot_FLOPs(flops, model_name, tome, tome_r)-> int:
     if 'vit_tiny_patch16_224' in model_name:
-        return flops + cal_qkvMatDot_FLOPs(batch=1,head_num=3,seq_len=197,dim=192,block_num=12)
+        return flops + cal_qkvMatDot_FLOPs(tome, tome_r, batch=1,head_num=3,seq_len=197,dim=192,block_num=12)
     elif 'vit_small_patch16_224' in model_name:
-        return flops + cal_qkvMatDot_FLOPs(batch=1,head_num=6,seq_len=197,dim=384,block_num=12)
+        return flops + cal_qkvMatDot_FLOPs(tome, tome_r, batch=1,head_num=6,seq_len=197,dim=384,block_num=12)
     elif 'vit_base_patch16_224' in model_name:
-        return flops + cal_qkvMatDot_FLOPs(batch=1,head_num=12,seq_len=197,dim=768,block_num=12)
+        return flops + cal_qkvMatDot_FLOPs(tome, tome_r, batch=1,head_num=12,seq_len=197,dim=768,block_num=12)
+    elif 'vit_large_patch16_224' in model_name:
+        return flops + cal_qkvMatDot_FLOPs(tome, tome_r, batch=1,head_num=16,seq_len=197,dim=1024,block_num=24)
     elif 'vit_small_patch32_224' in model_name:
-        return flops + cal_qkvMatDot_FLOPs(batch=1,head_num=6,seq_len=50,dim=384,block_num=12)
+        return flops + cal_qkvMatDot_FLOPs(tome, tome_r, batch=1,head_num=6,seq_len=50,dim=384,block_num=12)
     else:
         print("Model attention qkvMatDot FLOPs not added!")
         return flops
     
     
 
-def cal_qkvMatDot_FLOPs(batch=1,head_num=6,seq_len=197,dim=384,block_num=12):
+def cal_qkvMatDot_FLOPs(tome, tome_r, batch=1,head_num=6,seq_len=197,dim=384,block_num=12):
     
     '''
     x = F.scaled_dot_product_attention(
@@ -196,20 +198,24 @@ def cal_qkvMatDot_FLOPs(batch=1,head_num=6,seq_len=197,dim=384,block_num=12):
 
     This code cannot be automatically calculated for FLOPs by these packages: ptflops calflops ptflops fvcore thop
     
-    (tq)vit-t-16: batch=1,head_num=3,seq_len=197,dim=192,block_num=12 ,result: (180M)180.23M
-    (tq)vit-s-16: batch=1,head_num=6,seq_len=197,dim=384,block_num=12  ,result: (360.005M)360.46M
-    (tq)vit-s-32: batch=1,head_num=6,seq_len=50,dim=384,block_num=12    ,result: (23.11M)23.22M
-    (tq)vit-s-32(384): batch=1,head_num=6,seq_len= 145,dim=384,block_num=12, result: (194.95MB)195.28M
-    (tq)vit-b-16: batch=1,head_num=12,seq_len=197,dim=768,block_num=12  ,result: (0.72G)0.72G
+    (vq)vit-t-16: batch=1,head_num=3,seq_len=197,dim=192,block_num=12 ,result: (180M)180.23M
+    (vq)vit-s-16: batch=1,head_num=6,seq_len=197,dim=384,block_num=12  ,result: (360.005M)360.46M
+    (vq)vit-s-32: batch=1,head_num=6,seq_len=50,dim=384,block_num=12    ,result: (23.11M)23.22M
+    (vq)vit-s-32(384): batch=1,head_num=6,seq_len= 145,dim=384,block_num=12, result: (194.95MB)195.28M
+    (vq)vit-b-16: batch=1,head_num=12,seq_len=197,dim=768,block_num=12  ,result: (0.72G)0.72G
     '''
     b=batch
     h = head_num
     n = seq_len
     d=dim//head_num
-    # if istq:
-    #     FLOPs= 0.5*block_num*((2*d-1)*n*n*b*h + 3*b*h*n*n-1 + (2*n-1)*n*d*b*h) #MACs -> FLOPs
-    # else:
-    FLOPs= 0.5*block_num*(b*h*n*d + (2*d-1)*n*n*b*h + 3*b*h*n*n-1 + (2*n-1)*n*d*b*h)
+    FLOPs = 0
+    if tome:
+        for i in range(block_num):
+            n = n-i*tome_r if n-i*tome_r>seq_len//2 else (seq_len//2 +1)
+            print(n)
+            FLOPs+=0.5*(b*h*n*d + (2*d-1)*n*n*b*h + 3*b*h*n*n-1 + (2*n-1)*n*d*b*h)
+    else:
+        FLOPs= 0.5*block_num*(b*h*n*d + (2*d-1)*n*n*b*h + 3*b*h*n*n-1 + (2*n-1)*n*d*b*h)
     return FLOPs
 
 def format_param_count(param_count, decimal_places=2):
@@ -277,10 +283,6 @@ def validate(args):
 
     if args.checkpoint:
         load_checkpoint(model, args.checkpoint, args.use_ema, strict=False)
-
-    # if args.pre_calculate:
-        # model.pre_calculate()
-
     if args.reparam:
         # model = reparameterize_model(model)
         model.reparameterize()
@@ -293,7 +295,7 @@ def validate(args):
         model.r = args.tome_r
         print(f"Applied ToMe with ratio {args.tome_r}")
 
-    param_count = sum([m.numel() for m in model.parameters()])
+    param_count = sum([m.numel() for m in model.parameters()])+sum(b.numel() for b in model.buffers())
     # _logger.info('Model %s created, param count: %d' % (args.model, param_count))
     
     data_config = resolve_data_config(
@@ -446,7 +448,7 @@ def validate(args):
     flops, params = profile(model, inputs=(input,))
     print(params)
     if 'vit' in args.model:
-        flops = add_attention_qkvMatDot_FLOPs(flops, args.model)
+        flops = add_attention_qkvMatDot_FLOPs(flops, args.model, args.tome, args.tome_r)
     print(flops)
     if 'swin' in args.model:
         if hasattr(model, 'flops'):

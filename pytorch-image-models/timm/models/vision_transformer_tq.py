@@ -73,33 +73,36 @@ class Attention_TQ(nn.Module):
         self.token_wise_rep = False
         self.tq_qkv = choose_tq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, tq_level=tq_level, tq_Tinit=tq_Tinit)
         self.tq_proj = choose_tq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, tq_level=tq_level, tq_Tinit=tq_Tinit)
+        self.register_buffer("qkv_dict", torch.tensor(0))
+        self.register_buffer("proj_codebook", torch.tensor(0))
+
     def reparameterize(self):
         '''
         fixed_codebook: codebook->norm
         '''
         print('using Attention reparameterize')
         self.token_wise_rep = True
-        self.qkv_dict = nn.Embedding(self.tq_qkv.codebook_size, 3*self.dim)
+        # self.qkv_dict = nn.Embedding(self.tq_qkv.codebook_size, 3*self.dim)
         fixed_codebook = self.tq_qkv.reparameterize().unsqueeze(0)
         B, N, C = fixed_codebook.shape
         qkv = self.qkv(fixed_codebook).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
         q = q * self.scale
-        q_flat = q.permute(0, 2, 1, 3).reshape(-1, self.dim)  # shape: [B*N*num_heads, dim]
+        q_flat = q.permute(0, 2, 1, 3).reshape(-1, self.dim)  # shape: [B*N,num_heads* dim]
         k_flat = k.permute(0, 2, 1, 3).reshape(-1, self.dim)
         v_flat = v.permute(0, 2, 1, 3).reshape(-1, self.dim)
-        self.qkv_dict.weight.data.copy_(
+        self.qkv_dict=(
             torch.cat([q_flat, k_flat, v_flat], dim=1).reshape(-1, 3 * self.dim)
         )
         del self.qkv
         del self.q_norm, self.k_norm, self.scale
 
-        self.proj_codebook = nn.Embedding(self.tq_proj.codebook_size, self.dim)
+        # self.proj_codebook = nn.Embedding(self.tq_proj.codebook_size, self.dim)
 
         fixed_codebook = self.tq_proj.reparameterize()
         reped_codebook = self.proj(fixed_codebook)
-        self.proj_codebook.weight.data.copy_(reped_codebook)
+        self.proj_codebook=(reped_codebook)
         del self.proj
 
     def forward(self, x):
@@ -107,15 +110,16 @@ class Attention_TQ(nn.Module):
             B, N, C = x.shape
             
             embedding_index =  self.tq_qkv(x)
-            qkv = self.qkv_dict(embedding_index).reshape(B, N, 3, self.num_heads, self.head_dim)
-            q, k, v = qkv.unbind(dim=2)
-            q = q.permute(0, 2, 1, 3).contiguous()   # [B, num_heads, N, head_dim]
-            k = k.permute(0, 2, 1, 3).contiguous() 
-            v = v.permute(0, 2, 1, 3).contiguous() 
+
+            qkv = self.qkv_dict[embedding_index].reshape(B, N, 3, self.num_heads, self.head_dim).permute(2,0,3,1,4) 
+             # [3,B, num_heads, N, head_dim]
+            q, k, v = qkv.unbind(dim=0)
+            # qkv = qkv.permute(0,3,2,1,4).contiguous()   # [B, num_heads, 3, N, head_dim]
+            # q, k, v = qkv.unbind(dim=2)
         else:
             B, N, C = x.shape
             x = self.tq_qkv(x)
-            qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4).contiguous() 
+            qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
             q, k, v = qkv.unbind(0)
             q, k = self.q_norm(q), self.k_norm(k)
             # print(f'TQ Attention q mean:{q.mean().item()}, k mean:{k.mean().item()} , q std: {q.std().item()}, k std: {k.std().item()}, qk std:{(q @ k.transpose(-2, -1)).std().item()}, scale:{self.scale}   ')
@@ -131,7 +135,7 @@ class Attention_TQ(nn.Module):
         x = x.transpose(1, 2).reshape(B, N, C)
         if self.token_wise_rep:
             embedding_index =  self.tq_proj(x)
-            x = self.proj_codebook(embedding_index)
+            x = self.proj_codebook[embedding_index]
         else:
             x = self.tq_proj(x)
             x = self.proj(x)
@@ -176,17 +180,17 @@ class Attention_TQ_proj(nn.Module):
         '''
         self.token_wise_rep = True
         print('using Attention reparameterize')
-        self.proj_codebook = nn.Embedding(self.tq_proj.codebook_size, self.dim)
+        # self.proj_codebook = nn.Embedding(self.tq_proj.codebook_size, self.dim)
 
         fixed_codebook = self.tq_proj.reparameterize()
         reped_codebook = self.proj(fixed_codebook)
-        self.proj_codebook.weight.data.copy_(reped_codebook)
+        self.proj_codebook=reped_codebook.data
         del self.proj
 
     def forward(self, x):
 
         B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4).contiguous() 
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
         # print(f'TQ Attention q mean:{q.mean().item()}, k mean:{k.mean().item()} , q std: {q.std().item()}, k std: {k.std().item()}, qk std:{(q @ k.transpose(-2, -1)).std().item()}, scale:{self.scale}   ')
@@ -198,7 +202,7 @@ class Attention_TQ_proj(nn.Module):
         x = x.transpose(1, 2).reshape(B, N, C)
         if self.token_wise_rep:
             embedding_index =  self.tq_proj(x)
-            x = self.proj_codebook(embedding_index)
+            x = self.proj_codebook[embedding_index]
         else:
             x = self.tq_proj(x)
             x = self.proj(x)
@@ -351,7 +355,7 @@ class Block_TQ_FFN(nn.Module):
         self.token_wise_rep = False
         self.dict_n = dic_n
         self.dim = dim
-
+        self.register_buffer("rep_codebook", torch.tensor(0))
         # self.layer_scale_1 = nn.Parameter(
         #         layer_scale_init_value * torch.ones((dim)), requires_grad=True)
         # self.layer_scale_2 = nn.Parameter(
@@ -360,11 +364,13 @@ class Block_TQ_FFN(nn.Module):
     def reparameterize(self):
         print('using Block reparameterize')
         self.token_wise_rep = True
-        self.rep_codebook = nn.Embedding(self.tq.codebook_size, self.dim)
+        # self.rep_codebook = nn.Embedding(self.tq.codebook_size, self.dim)
         fixed_codebook = self.tq.reparameterize()
         x=self.mlp(fixed_codebook)
         x = self.ls2(x)
-        self.rep_codebook.weight.data.copy_(x)
+        print(f"rep_codebook device: {self.rep_codebook.device}")
+        print(f"x: {x.device}")
+        self.rep_codebook = x.data#.to(self.rep_codebook.device)
         del self.mlp
         del self.ls2
     def forward(self, x):
@@ -377,7 +383,7 @@ class Block_TQ_FFN(nn.Module):
         x = self.norm2(x) 
         if not self.training and self.token_wise_rep:
             embedding_index =  self.tq(x)
-            z_q = self.rep_codebook(embedding_index)
+            z_q = self.rep_codebook[embedding_index]
             z_q = z_q.view(feat0.shape)
             return z_q+feat0
         else:
@@ -428,7 +434,6 @@ class Block_TQ_ATTN(nn.Module):
             norm_layer=norm_layer,
             # 暂时固定值
             tq_type=tq_type,
-            # tq_level = [3,5,3,5],
             tq_level = tq_level,
             dic_n=1000, dic_dim=len(tq_level),
             tq_Tinit = tq_Tinit
@@ -735,6 +740,7 @@ class TQ_VisionTransformer(nn.Module):
                   tq_Tinit=tq_Tinit
             ) )
             else:
+                # block_list.append(Block(
                 block_list.append(Block_TQ_ATTN(
                 dim=embed_dim,
                 num_heads=num_heads,
@@ -979,7 +985,7 @@ class TQ_VisionTransformer(nn.Module):
         if reshape:
             grid_size = self.patch_embed.grid_size
             outputs = [
-                out.reshape(x.shape[0], grid_size[0], grid_size[1], -1).permute(0, 3, 1, 2).contiguous()
+                out.reshape(x.shape[0], grid_size[0], grid_size[1], -1).permute(0, 3, 1, 2)
                 for out in outputs
             ]
 

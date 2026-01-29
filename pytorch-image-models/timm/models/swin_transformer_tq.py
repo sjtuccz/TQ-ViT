@@ -261,6 +261,8 @@ class tqWindowAttention(nn.Module):
         self.qkv_tq = choose_tq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, tq_level=tq_level, tq_Tinit=tq_Tinit)
         # self.proj_tq = choose_tq(tq_type=tq_type, dic_n=dic_n, dim=attn_dim, dic_dim=dic_dim, tq_level=tq_level, tq_Tinit=tq_Tinit)
         self.attn_dim = attn_dim
+        self.register_buffer("qkv_codebook", torch.tensor(0.0))
+        # self.register_buffer("proj_codebook", torch.tensor(0.0))
     def _get_rel_pos_bias(self) -> torch.Tensor:
         relative_position_bias = self.relative_position_bias_table[
             self.relative_position_index.view(-1)].view(self.window_area, self.window_area, -1)  # Wh*Ww,Wh*Ww,nH
@@ -279,11 +281,10 @@ class tqWindowAttention(nn.Module):
             z= z[0]
         if self.token_wise_rep:
             index_map = z
-            qkv = self.qkv_codebook(index_map).reshape(B_, N, 3, self.num_heads, -1)
+            qkv = self.qkv_codebook[index_map].reshape(B_, N, 3, self.num_heads, -1)
+            qkv = qkv.permute(0,3,2,1,4)  # [B, num_heads, N, head_dim]
             q, k, v = qkv.unbind(dim=2)
-            q = q.permute(0, 2, 1, 3).contiguous()  # [B, num_heads, N, head_dim]
-            k = k.permute(0, 2, 1, 3).contiguous() 
-            v = v.permute(0, 2, 1, 3).contiguous() 
+
         else: 
             qkv = self.qkv(z).reshape(B_, N, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4).contiguous() 
             q, k, v = qkv.unbind(0)
@@ -304,7 +305,7 @@ class tqWindowAttention(nn.Module):
         #     z= z[0]
         # if self.token_wise_rep:
         #     index_map = z
-        #     x = self.proj_codebook(index_map)
+        #     x = self.proj_codebook[index_map]
         # else:
         x = self.proj(x)
         x = self.proj_drop(x)
@@ -314,7 +315,7 @@ class tqWindowAttention(nn.Module):
         print('using attn reparameterize')
         self.token_wise_rep = True
 
-        self.qkv_codebook = nn.Embedding(self.qkv_tq.codebook_size, self.attn_dim*3)
+        # self.qkv_codebook = nn.Embedding(self.qkv_tq.codebook_size, self.attn_dim*3)
         fixed_codebook_qkv = self.qkv_tq.reparameterize()
         fixed_codebook_qkv = fixed_codebook_qkv.unsqueeze(0)
         B_, N, C = fixed_codebook_qkv.shape
@@ -324,15 +325,15 @@ class tqWindowAttention(nn.Module):
         q_flat = q.permute(0, 2, 1, 3).reshape(-1, self.dim).contiguous()   # shape: [B*N*num_heads, dim]
         k_flat = k.permute(0, 2, 1, 3).reshape(-1, self.dim).contiguous() 
         v_flat = v.permute(0, 2, 1, 3).reshape(-1, self.dim).contiguous() 
-        self.qkv_codebook.weight.data.copy_(
+        self.qkv_codebook.data=(
             torch.cat([q_flat, k_flat, v_flat], dim=1).reshape(-1, self.attn_dim*3)
         )
         del self.qkv, self.scale
 
-        # self.proj_codebook = nn.Embedding(self.proj_tq.codebook_size, self.dim)
+        #self.proj_codebook = nn.Embedding(self.proj_tq.codebook_size, self.dim)
         # fixed_codebook_proj = self.proj_tq.reparameterize()
         # reped_codebook_proj = self.proj(fixed_codebook_proj)
-        # self.proj_codebook.weight.data.copy_(reped_codebook_proj)
+        # self.proj_codebook.data=(reped_codebook_proj)
         # del self.proj
 
     @torch.jit.ignore
@@ -787,6 +788,7 @@ class TQ_SwinTransformerBlock_TQ_FFN(nn.Module):
             attn_mask = None
 
         self.register_buffer("attn_mask", attn_mask, persistent=False)
+        self.register_buffer("rep_codebook", torch.tensor(0.0))
 
     def _calc_window_shift(self, target_window_size, target_shift_size) -> Tuple[Tuple[int, int], Tuple[int, int]]:
         target_window_size = to_2tuple(target_window_size)
@@ -839,7 +841,7 @@ class TQ_SwinTransformerBlock_TQ_FFN(nn.Module):
         x = self.norm2(x)
         if not self.training and self.token_wise_rep:
             embedding_index =  self.tq(x)
-            z_q = self.rep_codebook(embedding_index)
+            z_q = self.rep_codebook[embedding_index]
             x = feat + z_q
         else:
             x = self.tq(x)
@@ -870,10 +872,10 @@ class TQ_SwinTransformerBlock_TQ_FFN(nn.Module):
     def reparameterize(self):
         print('using FFN reparameterize')
         self.token_wise_rep = True
-        self.rep_codebook = nn.Embedding(self.tq.codebook_size, self.dim)
+        # self.rep_codebook = nn.Embedding(self.tq.codebook_size, self.dim)
         fixed_codebook = self.tq.reparameterize()
         x=self.mlp(fixed_codebook)
-        self.rep_codebook.weight.data.copy_(x)
+        self.rep_codebook.data=(x)
         del self.mlp
 
 

@@ -12,8 +12,8 @@ def choose_tq(tq_type, dic_n, dim, dic_dim, tq_level=[3,3,3,3], tq_Tinit=1, inpu
             return VectorQuantizer(n_e=dic_n, channels_in=dim, channels_dim=dic_dim)
     elif tq_type == 'tq_qde':
         return TQ_Qscale_deQscale_equal(channels_in=dim, channels_dim=dic_dim, levels=tq_level, T=tq_Tinit)
-    elif tq_type == 'tq':
-        return TQ(channels_in=dim, channels_dim=dic_dim, levels=tq_level)
+    # elif tq_type == 'tq':
+    #     return TQ(channels_in=dim, channels_dim=dic_dim, levels=tq_level)
     elif tq_type == 'tq_q':
         return TQ_Qscale(channels_in=dim, channels_dim=dic_dim, levels=tq_level, T=tq_Tinit)
     # elif tq_type == 'ttqs':
@@ -325,17 +325,17 @@ class TQ_Qscale_deQscale_equal(nn.Module):
         z = self.compress(z) # (b, h , dim)
         codes = self.quantize(z) # range (-T,T)
         quantization_error = torch.mean((z-codes.detach())**2)
-        if rand < 0.0005:
-            # analyze_tensor(input, name="input")
-            # analyze_tensor(z, name="compress")
-            # analyze_tensor(codes, name="codes")
-            indices = self.codes_to_indices(codes)
-            # self.codebook_meter.update(indices)
-            unique_index=torch.unique(indices)
-            num_feature = z.shape[0] * z.shape[1]
-            # print(f"NumFeature: {num_feature}, CodebookSize: {self.codebook_size}, QuantiError: {quantization_error}")
-            # print(f"ActivatedCode:{unique_index.shape[0]}, NumFeature: {num_feature}, CodebookSize: {self.codebook_size}, QuantiError: {quantization_error}, T={self.get_scale().data} AQ={self.anti_q.data}")
-            print(f"ActivatedCode:{unique_index.shape[0]}, NumFeature: {num_feature}, CodebookSize: {self.codebook_size}, QuantiError: {quantization_error}, T={self.get_scale().data}")
+        # if rand < 0.0005:
+        #     # analyze_tensor(input, name="input")
+        #     # analyze_tensor(z, name="compress")
+        #     # analyze_tensor(codes, name="codes")
+        #     indices = self.codes_to_indices(codes)
+        #     # self.codebook_meter.update(indices)
+        #     unique_index=torch.unique(indices)
+        #     num_feature = z.shape[0] * z.shape[1]
+        #     # print(f"NumFeature: {num_feature}, CodebookSize: {self.codebook_size}, QuantiError: {quantization_error}")
+        #     # print(f"ActivatedCode:{unique_index.shape[0]}, NumFeature: {num_feature}, CodebookSize: {self.codebook_size}, QuantiError: {quantization_error}, T={self.get_scale().data} AQ={self.anti_q.data}")
+        #     print(f"ActivatedCode:{unique_index.shape[0]}, NumFeature: {num_feature}, CodebookSize: {self.codebook_size}, QuantiError: {quantization_error}, T={self.get_scale().data}")
         
         if not self.training and self.token_wise_rep:
             indices = self.codes_to_indices(codes)
@@ -436,6 +436,8 @@ class TQ_Qscale_deQscale(nn.Module):
         self.token_wise_rep = True
         implicit_codebook = self._indices_to_codes(torch.arange(self.codebook_size).to(self.codebook_size.device))
         expand_dict = self.expand(implicit_codebook)
+        print(f"expand_dict device: {expand_dict.device}")
+        print(f"codebook_size device: {self.codebook_size.device}")
         del self.expand
         return expand_dict
     
@@ -452,17 +454,17 @@ class TQ_Qscale_deQscale(nn.Module):
         # print("z shape :",z.shape)
         z = self.compress(z) # (b, h , dim)
         codes = self.quantize(z) # range (-T,T)
-        quantization_error = torch.mean((z-codes.detach())**2)
-        if rand < 0.0005:
-            # analyze_tensor(input, name="input")
-            # analyze_tensor(z, name="compress")
-            # analyze_tensor(codes, name="codes")
-            indices = self.codes_to_indices(codes)
-            # self.codebook_meter.update(indices)
-            unique_index=torch.unique(indices)
-            num_feature = z.shape[0] * z.shape[1]
-            # print(f"NumFeature: {num_feature}, CodebookSize: {self.codebook_size}, QuantiError: {quantization_error}")
-            print(f"ActivatedCode:{unique_index.shape[0]}, NumFeature: {num_feature}, CodebookSize: {self.codebook_size}, QuantiError: {quantization_error}, T={self.get_scale().data} AQ={self.anti_q.data}")
+        # quantization_error = torch.mean((z-codes.detach())**2)
+        # if rand < 0.0005:
+        #     # analyze_tensor(input, name="input")
+        #     # analyze_tensor(z, name="compress")
+        #     # analyze_tensor(codes, name="codes")
+        #     indices = self.codes_to_indices(codes)
+        #     # self.codebook_meter.update(indices)
+        #     unique_index=torch.unique(indices)
+        #     num_feature = z.shape[0] * z.shape[1]
+        #     # print(f"NumFeature: {num_feature}, CodebookSize: {self.codebook_size}, QuantiError: {quantization_error}")
+        #     print(f"ActivatedCode:{unique_index.shape[0]}, NumFeature: {num_feature}, CodebookSize: {self.codebook_size}, QuantiError: {quantization_error}, T={self.get_scale().data} AQ={self.anti_q.data}")
         
         if not self.training and self.token_wise_rep:
             indices = self.codes_to_indices(codes)

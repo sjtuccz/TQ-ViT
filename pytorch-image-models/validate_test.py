@@ -22,6 +22,7 @@ os.environ['HF_HUB_DOWNLOAD_TIMEOUT'] = '600'
 import torch
 import torch.nn as nn
 import torch.nn.parallel
+import numpy as np
 
 from timm.data import create_dataset, create_loader, resolve_data_config, RealLabelsImagenet
 from timm.layers import apply_test_time_pool, set_fast_norm
@@ -29,7 +30,9 @@ from timm.models import create_model, load_checkpoint, is_model, list_models
 from timm.utils import accuracy, AverageMeter, natural_key, setup_default_logging, set_jit_fuser, \
     decay_batch_step, check_batch_size_retry, ParseKwargs, reparameterize_model
 from timm.data.constants import CIFAR10_MEAN, CIFAR10_STD, CIFAR100_TRAIN_MEAN, CIFAR100_TRAIN_STD, TINY_IMAGENET_MEAN, TINY_IMAGENET_STD,IMAGENET_DEFAULT_MEAN,IMAGENET_DEFAULT_STD
+from tqdm import tqdm
 from ToMe import apply_patch as tome
+
 
 try:
     from apex import amp
@@ -55,6 +58,113 @@ has_compile = hasattr(torch, 'compile')
 _logger = logging.getLogger('validate')
 
 
+# for latency profiling
+class LightweightProfiler:
+    """轻量级性能分析器"""
+    
+    def __init__(self, model):
+        self.model = model
+        self.timings = OrderedDict()
+        self.handles = []
+        
+    def _get_time(self):
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        return time.perf_counter()
+    
+    def _add_hooks(self):
+        """添加前向hook"""
+        def make_hook(name):
+            def forward_pre_hook(module, input):
+                self.start_times[name] = self._get_time()
+            
+            def forward_hook(module, input, output):
+                end_time = self._get_time()
+                if name in self.start_times:
+                    elapsed = (end_time - self.start_times[name]) * 1000
+                    if name not in self.timings:
+                        self.timings[name] = []
+                    self.timings[name].append(elapsed)
+            
+            return forward_pre_hook, forward_hook
+        
+        self.start_times = {}
+        
+        for name, module in self.model.named_modules():
+            if len(list(module.children())) == 0:  # 叶子节点
+                pre_hook, hook = make_hook(name)
+                pre_handle = module.register_forward_pre_hook(pre_hook)
+                handle = module.register_forward_hook(hook)
+                self.handles.extend([pre_handle, handle])
+    
+    def profile(self, input_tensor, num_iterations=100, warmup=10):
+        """性能分析"""
+        # 添加hook
+        self._add_hooks()
+        
+        # 预热
+        self.model.eval()
+        with torch.no_grad():
+            for _ in range(warmup):
+                _ = self.model(input_tensor)
+        
+        # 清空计时
+        self.timings.clear()
+        
+        # 正式测试
+        with torch.no_grad():
+            for i in range(num_iterations):
+                _ = self.model(input_tensor)
+        
+        # 移除hook
+        self._remove_hooks()
+        
+        # 分析结果
+        return self.analyze()
+    
+    def _remove_hooks(self):
+        """移除所有hook"""
+        for handle in self.handles:
+            handle.remove()
+        self.handles.clear()
+    
+    def analyze(self):
+        """分析结果"""
+        results = {}
+        total_time = 0
+        
+        for name, times in self.timings.items():
+            if times:
+                mean_time = np.mean(times)
+                std_time = np.std(times)
+                results[name] = {
+                    'mean_ms': mean_time,
+                    'std_ms': std_time,
+                    'calls': len(times)
+                }
+                total_time += mean_time
+        
+        # 排序
+        sorted_results = sorted(results.items(), key=lambda x: x[1]['mean_ms'], reverse=True)
+        
+        # 打印
+        print(f"\n{'Layer':<40} {'Mean (ms)':<12} {'Std (ms)':<10} {'%':<8} {'Calls':<6}")
+        print("-" * 80)
+        
+        for name, stats in sorted_results:
+            percentage = (stats['mean_ms'] / total_time * 100) if total_time > 0 else 0
+            print(f"{name:<40} {stats['mean_ms']:<12.3f} {stats['std_ms']:<10.3f} "
+                  f"{percentage:<8.1f} {stats['calls']:<6}")
+        
+        print("-" * 80)
+        print(f"{'TOTAL':<40} {total_time:<12.3f} ms")
+        
+        return results
+
+
+
+
+
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Validation')
 parser.add_argument('data', nargs='?', metavar='DIR', const=None,
                     help='path to dataset (*deprecated*, use --data-dir)')
@@ -70,7 +180,7 @@ parser.add_argument('--model', '-m', metavar='NAME', default='dpn92',
                     help='model architecture (default: dpn92)')
 parser.add_argument('-j', '--workers', default=16, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
-parser.add_argument('-b', '--batch-size', default=1024, type=int,
+parser.add_argument('-b', '--batch-size', default=256, type=int,
                     metavar='N', help='mini-batch size (default: 256)')
 parser.add_argument('--img-size', default=None, type=int,
                     metavar='N', help='Input image dimension, uses model default if empty')
@@ -152,32 +262,36 @@ parser.add_argument('--valid-labels', default='', type=str, metavar='FILENAME',
 parser.add_argument('--retry', default=False, action='store_true',
                     help='Enable batch size decay & retry for single model validation')
 
-# for tqvit pre_calculate
+# for vqvit pre_calculate
 parser.add_argument('--repara', action='store_true', default=False,
-                    help='tqvit pre calculate .')
-
+                    help='vqvit pre calculate .')
 # for ToMe
 parser.add_argument('--tome', action='store_true', default=False,
                     help='applying token merging .')
-parser.add_argument('--tome-ratio', type=int, default=8,
+parser.add_argument('--tome-r', type=int, default=8,
                     help='token merging ratio .')
 
-def add_attention_qkvMatDot_FLOPs(flops, model_name)-> int:
+
+def add_attention_qkvMatDot_FLOPs(flops, model_name, tome, tome_r)-> int:
     if 'vit_tiny_patch16_224' in model_name:
-        return flops + cal_qkvMatDot_FLOPs(batch=1,head_num=3,seq_len=197,dim=192,block_num=12)
+        return flops + cal_qkvMatDot_FLOPs(tome, tome_r, batch=1,head_num=3,seq_len=197,dim=192,block_num=12)
     elif 'vit_small_patch16_224' in model_name:
-        return flops + cal_qkvMatDot_FLOPs(batch=1,head_num=6,seq_len=197,dim=384,block_num=12)
+        return flops + cal_qkvMatDot_FLOPs(tome, tome_r, batch=1,head_num=6,seq_len=197,dim=384,block_num=12)
     elif 'vit_base_patch16_224' in model_name:
-        return flops + cal_qkvMatDot_FLOPs(batch=1,head_num=12,seq_len=197,dim=768,block_num=12)
+        return flops + cal_qkvMatDot_FLOPs(tome, tome_r, batch=1,head_num=12,seq_len=197,dim=768,block_num=12)
+    elif 'vit_large_patch16_224' in model_name:
+        return flops + cal_qkvMatDot_FLOPs(tome, tome_r, batch=1,head_num=16,seq_len=197,dim=1024,block_num=24)
     elif 'vit_small_patch32_224' in model_name:
-        return flops + cal_qkvMatDot_FLOPs(batch=1,head_num=6,seq_len=50,dim=384,block_num=12)
+        return flops + cal_qkvMatDot_FLOPs(tome, tome_r, batch=1,head_num=6,seq_len=50,dim=384,block_num=12)
+    elif 'vit_small_patch16_384' in model_name:
+        return flops + cal_qkvMatDot_FLOPs(tome, tome_r, batch=1,head_num=6,seq_len=577,dim=384,block_num=12)
     else:
         print("Model attention qkvMatDot FLOPs not added!")
         return flops
     
     
 
-def cal_qkvMatDot_FLOPs(batch=1,head_num=6,seq_len=197,dim=384,block_num=12):
+def cal_qkvMatDot_FLOPs(tome, tome_r, batch=1,head_num=6,seq_len=197,dim=384,block_num=12):
     
     '''
     x = F.scaled_dot_product_attention(
@@ -193,20 +307,24 @@ def cal_qkvMatDot_FLOPs(batch=1,head_num=6,seq_len=197,dim=384,block_num=12):
 
     This code cannot be automatically calculated for FLOPs by these packages: ptflops calflops ptflops fvcore thop
     
-    (tq)vit-t-16: batch=1,head_num=3,seq_len=197,dim=192,block_num=12 ,result: (180M)180.23M
-    (tq)vit-s-16: batch=1,head_num=6,seq_len=197,dim=384,block_num=12  ,result: (360.005M)360.46M
-    (tq)vit-s-32: batch=1,head_num=6,seq_len=50,dim=384,block_num=12    ,result: (23.11M)23.22M
-    (tq)vit-s-32(384): batch=1,head_num=6,seq_len= 145,dim=384,block_num=12, result: (194.95MB)195.28M
-    (tq)vit-b-16: batch=1,head_num=12,seq_len=197,dim=768,block_num=12  ,result: (0.72G)0.72G
+    (vq)vit-t-16: batch=1,head_num=3,seq_len=197,dim=192,block_num=12 ,result: (180M)180.23M
+    (vq)vit-s-16: batch=1,head_num=6,seq_len=197,dim=384,block_num=12  ,result: (360.005M)360.46M
+    (vq)vit-s-32: batch=1,head_num=6,seq_len=50,dim=384,block_num=12    ,result: (23.11M)23.22M
+    (vq)vit-s-32(384): batch=1,head_num=6,seq_len= 145,dim=384,block_num=12, result: (194.95MB)195.28M
+    (vq)vit-b-16: batch=1,head_num=12,seq_len=197,dim=768,block_num=12  ,result: (0.72G)0.72G
     '''
     b=batch
     h = head_num
     n = seq_len
     d=dim//head_num
-    # if istq:
-    #     FLOPs= 0.5*block_num*((2*d-1)*n*n*b*h + 3*b*h*n*n-1 + (2*n-1)*n*d*b*h) #MACs -> FLOPs
-    # else:
-    FLOPs= 0.5*block_num*(b*h*n*d + (2*d-1)*n*n*b*h + 3*b*h*n*n-1 + (2*n-1)*n*d*b*h)
+    FLOPs = 0
+    if tome:
+        for i in range(block_num):
+            n = n-i*tome_r if n-i*tome_r>seq_len//2 else (seq_len//2 +1)
+            print(n)
+            FLOPs+=0.5*(b*h*n*d + (2*d-1)*n*n*b*h + 3*b*h*n*n-1 + (2*n-1)*n*d*b*h)
+    else:
+        FLOPs= 0.5*block_num*(b*h*n*d + (2*d-1)*n*n*b*h + 3*b*h*n*n-1 + (2*n-1)*n*d*b*h)
     return FLOPs
 
 def format_param_count(param_count, decimal_places=2):
@@ -291,11 +409,8 @@ def validate(args):
 
     crop_pct = data_config['crop_pct']
     
-    input=torch.randn(1,data_config['input_size'][0],data_config['input_size'][1],data_config['input_size'][2]).to(device)
-    if args.tome:
-        tome(model)
-        model.r = args.tome_ratio
-        print(f"Applied ToMe with ratio {args.tome_ratio}")
+    input=torch.randn(1,data_config['input_size'][0],data_config['input_size'][1],data_config['input_size'][2], device=device)
+    
     if args.reparam:
         model.eval()
         model = model.to(device)
@@ -304,14 +419,10 @@ def validate(args):
             output_before_reparam = output_before_reparam[0]
         model = model.to('cpu')
         model.reparameterize()
-    
-    
     for name, param in model.named_parameters():
         num_params = param.numel()
         print(f"{name:35} | Shape: {str(list(param.shape)):20} | Params: {num_params:10,}")
-    # print("------------------------------------------- ")
-    # for module in model.modules():
-    #     print(module.__class__.__name__)
+
 
     from thop import profile, clever_format
     model.eval()
@@ -322,18 +433,53 @@ def validate(args):
     if args.reparam:
         is_same = torch.allclose(output_before_reparam, output, atol=1e-3)
         print("output is consistent Before and after token wise reparameterization:" ,is_same)
-    param_count = sum([m.numel() for m in model.parameters()])
+    if args.tome:
+        tome(model)
+        model.r = args.tome_r
+        print(f"Applied ToMe with ratio {args.tome_r}")
+    param_count = sum([m.numel() for m in model.parameters()])+sum(b.numel() for b in model.buffers())
     flops, params = profile(model, inputs=(input,))
     if 'vit' in args.model:
-        flops = add_attention_qkvMatDot_FLOPs(flops, args.model)
+        flops = add_attention_qkvMatDot_FLOPs(flops, args.model, args.tome, args.tome_r)
     if 'swin' in args.model:
         if hasattr(model, 'flops'):
             flops = model.flops()
         else:
             raise NotImplementedError("Please implement flops calculation function for swin model")
     flops, params = clever_format([flops, params], "%.3f")
+    #======== inference
+    del input
+    dummy_input =torch.randn(args.batch_size,data_config['input_size'][0],data_config['input_size'][1],data_config['input_size'][2], device=device)
+    warmup=5
+    num_batches=100
+    B, C, H, W = dummy_input.shape
+    print(f"测试配置: batch_size={B}, shape=({C}, {H}, {W})")
+    # print(f"预热 {warmup} 个批次...")
+    # with torch.no_grad():
+    #     for _ in range(warmup):
+    #         _ = model(dummy_input)
+    if device == 'cuda':
+        torch.cuda.synchronize()
+    if hasattr(model, 'timer') and model.timer:
+        model.timer.reset()
+    print(f"测试 {num_batches} 个批次...")
+    start_time = time.time()
+    with torch.no_grad():
+        for _ in tqdm(range(num_batches), desc="Throughput", unit="batch"):
+            _ = model(dummy_input)
+    if device == 'cuda':
+        torch.cuda.synchronize()
+    end_time = time.time()
+    total_time = end_time - start_time
+    total_images = B * num_batches
+    throughput = total_images / total_time  # images/sec
+
+    # if args.latency:
+    if hasattr(model, 'timer') and model.timer:
+        model.timer.print_summary()
+
     average_util = 0.0
-    if any(keyword in args.model for keyword in ('tq', 'tq', 'TQ', 'TQ')):
+    if any(keyword in args.model for keyword in ('vq', 'tq', 'TQ', 'VQ')):
         average_util = model.print_codebook_utilization()
     results = OrderedDict(
         model=args.model,
@@ -343,7 +489,8 @@ def validate(args):
         crop_pct=crop_pct,
         interpolation=data_config['interpolation'],
         params_thop=params,
-        codebook_utilization = f"{average_util:.2%}" if average_util else 'N/A'
+        codebook_utilization = f"{average_util:.2%}" if average_util else 'N/A',
+        FPS=f"{throughput}"
     )
 
     return results
@@ -458,5 +605,5 @@ def write_results(results_file, results, format='csv'):
 if __name__ == '__main__':
     main()
     # batch=1,head_num=6,seq_len= 145,dim=384,block_num=12
-    # result = cal_qkvMatDot_FLOPs(batch=1,head_num=6,seq_len=145,dim=384,block_num=12, istq=True)
+    # result = cal_qkvMatDot_FLOPs(batch=1,head_num=6,seq_len=145,dim=384,block_num=12, isvq=True)
     # print(result)  
