@@ -29,6 +29,7 @@ from timm.models import create_model, load_checkpoint, is_model, list_models
 from timm.utils import accuracy, AverageMeter, natural_key, setup_default_logging, set_jit_fuser, \
     decay_batch_step, check_batch_size_retry, ParseKwargs, reparameterize_model
 from timm.data.constants import CIFAR10_MEAN, CIFAR10_STD, CIFAR100_TRAIN_MEAN, CIFAR100_TRAIN_STD, TINY_IMAGENET_MEAN, TINY_IMAGENET_STD,IMAGENET_DEFAULT_MEAN,IMAGENET_DEFAULT_STD
+from thop import profile, clever_format
 from ToMe import apply_patch as tome
 try:
     from apex import amp
@@ -227,6 +228,14 @@ def format_param_count(param_count, decimal_places=2):
         return f"{round(param_count / 1e6, decimal_places)}M"  
     else:
         return f"{round(param_count / 1e3, decimal_places)}K" 
+
+def cal_storage(num_params):
+    memory_fp32 = num_params * 4 / (1024**2)
+    return f"{memory_fp32:.2f} MB"
+
+
+
+
 def validate(args):
     # might as well try to validate something
     # args.pretrained = args.pretrained or not args.checkpoint
@@ -288,18 +297,38 @@ def validate(args):
     if args.reparam:
         # model = reparameterize_model(model)
         model.reparameterize()
-        for name, param in model.named_parameters():
-            num_params = param.numel()
-            print(f"{name:35} | Shape: {str(list(param.shape)):20} | Params: {num_params:10,}")
 
     if args.tome:
         tome(model)
         model.r = args.tome_r
         print(f"Applied ToMe with ratio {args.tome_r}")
 
-    param_count = sum([m.numel() for m in model.parameters()])+sum(b.numel() for b in model.buffers())
+    # 打印模型参数
+    print("=" * 80)
+    print("MODEL PARAMETERS:")
+    print("=" * 80)
+    for name, param in model.named_parameters():
+        num_params = param.numel()
+        print(f"{name:35} | Shape: {list(param.shape)} | Params: {num_params:,} | Grad: {param.requires_grad}")
+
+    # 打印模型buffer
+    print("\n" + "=" * 80)
+    print("MODEL BUFFERS:")
+    print("=" * 80)
+    all_codebook_param=0
+    for name, buffer in model.named_buffers():
+        num_elements = buffer.numel()
+        if '_codebook' in name or '_dict' in name:
+            print("Found codebook buffer:", name)
+            print(str(buffer.dtype))
+            all_codebook_param+=num_elements
+        print(f"{name:35} | Shape: {list(buffer.shape)} | Elements: {num_elements:,} | Grad: {buffer.requires_grad}")
+
+        param_count = sum([m.numel() for m in model.parameters()])+sum(b.numel() for b in model.buffers())
     # _logger.info('Model %s created, param count: %d' % (args.model, param_count))
-    
+    all_codebook_param_num = clever_format(all_codebook_param)
+    all_codebook_param_storage = cal_storage(all_codebook_param)
+    print(f"\nTotal codebook parameters: {all_codebook_param_num}, storage: {all_codebook_param_storage}") 
     data_config = resolve_data_config(
         vars(args),
         model=model,
@@ -440,7 +469,7 @@ def validate(args):
     average_util = 0.0
     if any(keyword in args.model for keyword in ('tq', 'tq', 'TQ', 'TQ')):
         average_util = model.print_codebook_utilization()
-    from thop import profile, clever_format
+    
     
     model.eval()
     input=torch.randn(1,data_config['input_size'][0],data_config['input_size'][1],data_config['input_size'][2]).cuda()

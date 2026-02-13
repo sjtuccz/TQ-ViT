@@ -450,14 +450,14 @@ def validate(args):
     #======== inference
     del input
     dummy_input =torch.randn(args.batch_size,data_config['input_size'][0],data_config['input_size'][1],data_config['input_size'][2], device=device)
-    warmup=5
-    num_batches=100
+    warmup=3
+    num_batches=10
     B, C, H, W = dummy_input.shape
     print(f"测试配置: batch_size={B}, shape=({C}, {H}, {W})")
-    # print(f"预热 {warmup} 个批次...")
-    # with torch.no_grad():
-    #     for _ in range(warmup):
-    #         _ = model(dummy_input)
+    print(f"预热 {warmup} 个批次...")
+    with torch.no_grad():
+        for _ in range(warmup):
+            _ = model(dummy_input)
     if device == 'cuda':
         torch.cuda.synchronize()
     if hasattr(model, 'timer') and model.timer:
