@@ -60,7 +60,7 @@ parser.add_argument('data', nargs='?', metavar='DIR', const=None,
                     help='path to dataset (*deprecated*, use --data-dir)')
 parser.add_argument('--data-dir', metavar='DIR',
                     help='path to dataset (root dir)')
-parser.add_argument('--dataset', metavar='NAME', default='',
+parser.add_argument('--dataset', metavar='NAME', default='imagenet1k',
                     help='dataset type + name ("<type>/<name>") (default: ImageFolder or ImageTar if empty)')
 parser.add_argument('--split', metavar='NAME', default='validation',
                     help='dataset split (default: validation)')
@@ -294,6 +294,7 @@ def validate(args):
 
     if args.checkpoint:
         load_checkpoint(model, args.checkpoint, args.use_ema, strict=False)
+        # load_checkpoint(model, args.checkpoint, args.use_ema, strict=True)
     if args.reparam:
         # model = reparameterize_model(model)
         model.reparameterize()
@@ -324,7 +325,7 @@ def validate(args):
             all_codebook_param+=num_elements
         print(f"{name:35} | Shape: {list(buffer.shape)} | Elements: {num_elements:,} | Grad: {buffer.requires_grad}")
 
-        param_count = sum([m.numel() for m in model.parameters()])+sum(b.numel() for b in model.buffers())
+    param_count = sum([m.numel() for m in model.parameters()])+sum(b.numel() for b in model.buffers())
     # _logger.info('Model %s created, param count: %d' % (args.model, param_count))
     all_codebook_param_num = clever_format(all_codebook_param)
     all_codebook_param_storage = cal_storage(all_codebook_param)
@@ -499,8 +500,9 @@ def validate(args):
         img_size=data_config['input_size'],
         crop_pct=crop_pct,
         interpolation=data_config['interpolation'],
-        params_thop=params,
-        average_batchtime = f'{batch_time.avg:.3f}s, {input.size(0) / batch_time.avg:>7.2f}/s, FPS={1/(batch_time.avg/args.batch_size):.1f}',
+        # params_thop=params,
+        # average_batchtime = f'{batch_time.avg:.3f}s',
+        speed = f'{input.size(0)*args.batch_size / batch_time.avg:>7.2f} images/sec',
         codebook_utilization = f"{average_util:.2%}" if average_util else 'N/A'
     )
     

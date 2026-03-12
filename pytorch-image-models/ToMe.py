@@ -1,6 +1,5 @@
 '''
-Official PyTorch implemention of **ToMe** from paper: [Token Merging: Your ViT but Faster](https://arxiv.org/abs/2210.09461).  
-Daniel Bolya, Cheng-Yang Fu, Xiaoliang Dai, Peizhao Zhang, Christoph Feichtenhofer, Judy Hoffman.
+Adapted from the Official PyTorch Implementation of ·ToMe· .
 '''
 
 # Copyright (c) Meta Platforms, Inc. and affiliates.

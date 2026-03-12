@@ -42,7 +42,7 @@ from timm.layers import trunc_normal_, DropPath, SelectAdaptivePool2d, GroupNorm
 from ._builder import build_model_with_cfg
 from ._manipulate import checkpoint_seq
 from ._registry import generate_default_cfgs, register_model
-from timm.models.vectorquantize import choose_tq
+from timm.models.tq_block import choose_tq
 
 __all__ = ['TQ_MetaFormer']
 
@@ -420,7 +420,7 @@ class TQ_MetaFormerBlock_TQ_FFN(nn.Module):
         self.drop_path2 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.layer_scale2 = ls_layer() if layer_scale_init_value is not None else nn.Identity()
         self.res_scale2 = rs_layer() if res_scale_init_value is not None else nn.Identity()
-        self.tq = choose_tq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, tq_level=tq_level, tq_Tinit=tq_Tinit, input_format='NCHW' if use_nchw else'NCL')
+        self.tq = choose_tq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, tq_level=tq_level, tq_Tinit=tq_Tinit, input_format='NCHW' if use_nchw else'NLC')
         self.token_wise_rep = False
         self.dim = dim
         self.use_nchw = use_nchw

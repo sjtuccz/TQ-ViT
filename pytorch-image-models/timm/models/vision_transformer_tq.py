@@ -30,7 +30,7 @@ from ._builder import build_model_with_cfg
 from ._manipulate import named_apply, checkpoint_seq, adapt_input_conv
 from ._registry import generate_default_cfgs, register_model, register_model_deprecations
 
-from timm.models.vectorquantize import choose_tq
+from timm.models.tq_block import choose_tq
 from timm.models.vision_transformer import Attention
 __all__ = ['TQ_VisionTransformer']  # model_registry will add each entrypoint fn to this
 
@@ -52,7 +52,7 @@ class Attention_TQ(nn.Module):
             proj_drop=0.,
             norm_layer=nn.LayerNorm,
 
-            tq_type='tq_qd',
+            tq_type='TQ',
             tq_level = [3,3,3,3],
             dic_n=None, dic_dim=3, tq_Tinit=1
     ):
@@ -85,7 +85,7 @@ class Attention_TQ(nn.Module):
         # self.qkv_dict = nn.Embedding(self.tq_qkv.codebook_size, 3*self.dim)
         fixed_codebook = self.tq_qkv.reparameterize().unsqueeze(0)
         B, N, C = fixed_codebook.shape
-        qkv = self.qkv(fixed_codebook).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        qkv = self.qkv(fixed_codebook).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4) #(3, 1, num_heads, N, head_dim)
         q, k, v = qkv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
         q = q * self.scale
@@ -94,7 +94,9 @@ class Attention_TQ(nn.Module):
         v_flat = v.permute(0, 2, 1, 3).reshape(-1, self.dim)
         self.qkv_dict=(
             torch.cat([q_flat, k_flat, v_flat], dim=1).reshape(-1, 3 * self.dim)
-        )
+        ).data.contiguous()
+        # self.qkv_dict=torch.cat([q, k, v], dim=0).unsqueeze(1)# #(3, 1, num_heads, N, head_dim)
+        # self.qkv_dict_size = self.qkv_dict.shape[3]
         del self.qkv
         del self.q_norm, self.k_norm, self.scale
 
@@ -102,7 +104,7 @@ class Attention_TQ(nn.Module):
 
         fixed_codebook = self.tq_proj.reparameterize()
         reped_codebook = self.proj(fixed_codebook)
-        self.proj_codebook=(reped_codebook)
+        self.proj_codebook=reped_codebook.data.contiguous()
         del self.proj
 
     def forward(self, x):
@@ -111,15 +113,18 @@ class Attention_TQ(nn.Module):
             
             embedding_index =  self.tq_qkv(x)
 
+            # qkv = self.qkv_dict.expand(3, B, self.num_heads, self.qkv_dict_size, self.head_dim)
+            # index = embedding_index.view(1, B, 1, N, 1).expand(3, B, self.num_heads, N, self.head_dim).to(torch.int64)
+            # qkv = torch.gather(qkv, dim=3, index=index)
             qkv = self.qkv_dict[embedding_index].reshape(B, N, 3, self.num_heads, self.head_dim).permute(2,0,3,1,4) 
-             # [3,B, num_heads, N, head_dim]
+            #  [3,B, num_heads, N, head_dim]
             q, k, v = qkv.unbind(dim=0)
             # qkv = qkv.permute(0,3,2,1,4).contiguous()   # [B, num_heads, 3, N, head_dim]
             # q, k, v = qkv.unbind(dim=2)
         else:
             B, N, C = x.shape
             x = self.tq_qkv(x)
-            qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+            qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4) # (3 B num_heads N head_dim)
             q, k, v = qkv.unbind(0)
             q, k = self.q_norm(q), self.k_norm(k)
             # print(f'TQ Attention q mean:{q.mean().item()}, k mean:{k.mean().item()} , q std: {q.std().item()}, k std: {k.std().item()}, qk std:{(q @ k.transpose(-2, -1)).std().item()}, scale:{self.scale}   ')
@@ -141,160 +146,6 @@ class Attention_TQ(nn.Module):
             x = self.proj(x)
         x = self.proj_drop(x)
         return x
-class Attention_TQ_proj(nn.Module):
-    fused_attn: Final[bool]
-
-    def __init__(
-            self,
-            dim,
-            num_heads=8,
-            qkv_bias=False,
-            qk_norm=False,
-            attn_drop=0.,
-            proj_drop=0.,
-            norm_layer=nn.LayerNorm,
-
-            tq_type='tq_qd',
-            tq_level = [3,3,3,3],
-            dic_n=None, dic_dim=3, tq_Tinit=1
-    ):
-        super().__init__()
-        assert dim % num_heads == 0, 'dim should be divisible by num_heads'
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.scale = self.head_dim ** -0.5
-        self.dim = dim
-
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
-        self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
-        self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop)
-
-        self.token_wise_rep = False
-        self.tq_proj = choose_tq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, tq_level=tq_level, tq_Tinit=tq_Tinit)
-    def reparameterize(self):
-        '''
-        fixed_codebook: codebook->norm
-        '''
-        self.token_wise_rep = True
-        print('using Attention reparameterize')
-        # self.proj_codebook = nn.Embedding(self.tq_proj.codebook_size, self.dim)
-
-        fixed_codebook = self.tq_proj.reparameterize()
-        reped_codebook = self.proj(fixed_codebook)
-        self.proj_codebook=reped_codebook.data
-        del self.proj
-
-    def forward(self, x):
-
-        B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv.unbind(0)
-        q, k = self.q_norm(q), self.k_norm(k)
-        # print(f'TQ Attention q mean:{q.mean().item()}, k mean:{k.mean().item()} , q std: {q.std().item()}, k std: {k.std().item()}, qk std:{(q @ k.transpose(-2, -1)).std().item()}, scale:{self.scale}   ')
-        q = q * self.scale        
-        attn = q @ k.transpose(-2, -1)
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-        x = attn @ v
-        x = x.transpose(1, 2).reshape(B, N, C)
-        if self.token_wise_rep:
-            embedding_index =  self.tq_proj(x)
-            x = self.proj_codebook[embedding_index]
-        else:
-            x = self.tq_proj(x)
-            x = self.proj(x)
-        x = self.proj_drop(x)
-        return x
-
-class Attention_TQ_qkv(nn.Module):
-    fused_attn: Final[bool]
-
-    def __init__(
-            self,
-            dim,
-            num_heads=8,
-            qkv_bias=False,
-            qk_norm=False,
-            attn_drop=0.,
-            proj_drop=0.,
-            norm_layer=nn.LayerNorm,
-
-            tq_type='tq_qd',
-            tq_level = [3,3,3,3],
-            dic_n=None, dic_dim=3, tq_Tinit=1
-    ):
-        super().__init__()
-        assert dim % num_heads == 0, 'dim should be divisible by num_heads'
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.scale = self.head_dim ** -0.5
-        self.dim = dim
-
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
-        self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
-        self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop)
-
-        self.token_wise_rep = False
-        self.tq_qkv = choose_tq(tq_type=tq_type, dic_n=dic_n, dim=dim, dic_dim=dic_dim, tq_level=tq_level, tq_Tinit=tq_Tinit)
-    def reparameterize(self):
-        '''
-        fixed_codebook: codebook->norm
-        '''
-        print('using Attention reparameterize')
-        self.token_wise_rep = True
-        self.qkv_dict = nn.Embedding(self.tq_qkv.codebook_size, 3*self.dim)
-        fixed_codebook = self.tq_qkv.reparameterize().unsqueeze(0)
-        B, N, C = fixed_codebook.shape
-        qkv = self.qkv(fixed_codebook).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv.unbind(0)
-        q, k = self.q_norm(q), self.k_norm(k)
-        q = q * self.scale
-        q_flat = q.permute(0, 2, 1, 3).reshape(-1, self.dim)  # shape: [B*N*num_heads, dim]
-        k_flat = k.permute(0, 2, 1, 3).reshape(-1, self.dim)
-        v_flat = v.permute(0, 2, 1, 3).reshape(-1, self.dim)
-        self.qkv_dict.weight.data.copy_(
-            torch.cat([q_flat, k_flat, v_flat], dim=1).reshape(-1, 3 * self.dim)
-        )
-        del self.qkv
-        del self.q_norm, self.k_norm, self.scale
-    def forward(self, x):
-        if self.token_wise_rep:
-            B, N, C = x.shape
-            
-            embedding_index =  self.tq_qkv(x)
-            qkv = self.qkv_dict(embedding_index).reshape(B, N, 3, self.num_heads, self.head_dim)
-            q, k, v = qkv.unbind(dim=2)
-            q = q.permute(0, 2, 1, 3).contiguous()   # [B, num_heads, N, head_dim]
-            k = k.permute(0, 2, 1, 3).contiguous() 
-            v = v.permute(0, 2, 1, 3).contiguous() 
-        else:
-            B, N, C = x.shape
-            x = self.tq_qkv(x)
-            qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4).contiguous() 
-            q, k, v = qkv.unbind(0)
-            q, k = self.q_norm(q), self.k_norm(k)
-            # print(f'TQ Attention q mean:{q.mean().item()}, k mean:{k.mean().item()} , q std: {q.std().item()}, k std: {k.std().item()}, qk std:{(q @ k.transpose(-2, -1)).std().item()}, scale:{self.scale}   ')
-            q = q * self.scale
-            # print(f'q.shape before rep: {q.shape}')
-        
-
-        attn = q @ k.transpose(-2, -1)
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-        x = attn @ v
-
-        x = x.transpose(1, 2).reshape(B, N, C)
-
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x
-
 
 class LayerScale(nn.Module):
     def __init__(self, dim, init_values=1e-5, inplace=False):
@@ -370,7 +221,7 @@ class Block_TQ_FFN(nn.Module):
         x = self.ls2(x)
         print(f"rep_codebook device: {self.rep_codebook.device}")
         print(f"x: {x.device}")
-        self.rep_codebook = x.data#.to(self.rep_codebook.device)
+        self.rep_codebook = x.data.contiguous()#.to(self.rep_codebook.device)
         del self.mlp
         del self.ls2
     def forward(self, x):
@@ -464,17 +315,13 @@ class Block_TQ_ATTN(nn.Module):
         input0 = x
         x = self.attn(self.norm1(x))
         x = self.drop_path1(self.ls1(x))
-        # feat = x # 蒸馏位置1
         x = input0 + x
         input = x
-        feat0 = x # 蒸馏位置2
         x = self.norm2(x)
         x = self.mlp(x)
-        # feat = x # z蒸馏位置3
         x = self.ls2(x)
         x = self.drop_path2(x)
         x = x + input
-        feat = x # 蒸馏位置4
         return x
 class Block(nn.Module):
 
@@ -525,21 +372,15 @@ class Block(nn.Module):
             x, attn_proj_init_feat = self.attn(x, init_codebook_feat=init_codebook_feat)
         else:
             x=self.attn(x)
-        feat_attn = x
         x = self.drop_path1(self.ls1(x))
-        # feat = x # 蒸馏位置1
         x = input0 + x
-        feat0 = x # 蒸馏位置2
         input = x
-        init_feat = x
         x = self.norm2(x)
         x = self.mlp(x)
-        # feat = x  # 蒸馏位置3
         x = self.ls2(x)
         x = self.drop_path2(x)
         x = x + input
-        feat = x  # 蒸馏位置4
-        return x, torch.tensor(0.0).cuda(), (feat0,feat)
+        return x
 class TQ_VisionTransformer(nn.Module):
     """ Vision Transformer
 
@@ -581,7 +422,7 @@ class TQ_VisionTransformer(nn.Module):
             act_layer: Optional[LayerType] = None,
             block_fn: Type[nn.Module] = None,
             mlp_layer: Type[nn.Module] = Mlp,
-            dic_n=None, dic_dim=4, tq_type='tq_qd', tq_level=[3,3,3,3], tq_Tinit=1
+            dic_n=None, dic_dim=4, tq_type='TQ', tq_level=[3,3,3,3], tq_Tinit=1
     ):
         """
         Args:

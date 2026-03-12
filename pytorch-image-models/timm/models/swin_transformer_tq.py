@@ -30,7 +30,7 @@ from ._features_fx import register_notrace_function
 from ._manipulate import checkpoint_seq, named_apply
 from ._registry import generate_default_cfgs, register_model, register_model_deprecations
 from .vision_transformer import get_init_weights_vit
-from timm.models.vectorquantize import choose_tq
+from timm.models.tq_block import choose_tq
 
 __all__ = ['TQ_SwinTransformer']  # model_registry will add each entrypoint fn to this
 
