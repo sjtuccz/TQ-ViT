@@ -1,6 +1,6 @@
 # Supplementary materials
 
-**TQViT-main.zip contains all the code for the paper "TQ-ViTs: Accelerating Vision Transformer via Token-wise Reparametrization".**
+**TQ-ViT-main.zip contains all the code for the paper "TQ-ViTs: Accelerating Vision Transformer via Token-wise Reparametrization".**
 
 ### Model file
 `TQ_ViT`: pytorch-image-models/timm/models/vision_transformer_tq.py
@@ -19,6 +19,8 @@
 `validate.py`: pytorch-image-models/validate.py
 
 `only_val_speed.py`:pytorch-image-models/only_val_speed.py
+
+Please note that before testing the speed with the `only_val_speed.py` script, you should comment out line 76 in the tq_block.pyfile. This line is specifically used for counting codebook utility statistics.
 
 ## Training
 Hardware:
@@ -39,14 +41,17 @@ CUDA_VISIBLE_DEVICES=2,3 python -m torch.distributed.run --nproc_per_node=2 --ma
 ```
 
 ## Test
-Please note that the *--reparam* option will perform token reparameterization on TQ-ViT, corresponding to the "inference phase" architecture in paper. *--tome --tome-r 8* option will perform token merginr on TQ-ViT,  corresponding to the "TQ-ViT+ToMe" in paper.
 
-For instance, you can test the model using the provided weights: *../tq_weight/tq_vit_small_patch16_224-79.34.pth.tar*
+All efficiency metrics are tested on an `NVIDIA GeForce RTX 3080 Ti`.
+
+Please note that the **`--reparam`** option will perform token reparameterization on TQ-ViT, corresponding to the "inference phase" architecture in paper. **`--tome --tome-r 8`** option will perform token merginr on TQ-ViT,  corresponding to the "TQ-ViT+ToMe(r=8)" in paper.
+
+For instance, you can test the model using the provided weights: *../tq_weight/tq_vit_small_patch16_224-79.34.pth.tar*. Due to supplement file size limitations, we have only uploaded the TQ-ViT/S weights. The weights for the other TQ models will be publicly available on GitHub.
 
 ```sh
 CUDA_VISIBLE_DEVICES=1 python validate.py --model tq_vit_small_patch16_224  --dataset imagenet1k --model-kwargs dic_dim=4 tq_level=[3,3,3,3] --mean 0.5 0.5 0.5 --std 0.5 0.5 0.5 --checkpoint ../tq_weight/tq_vit_small_patch16_224-79.34.pth.tar --data-dir /path/imagenet1k --reparam  
 ```
-then, you will get result of *TQ-ViT/S* inference phase:
+then, you will get result of `TQ-ViT/S` inference phase:
 ```sh
 {
     "dataset": "imagenet1k",
@@ -62,7 +67,7 @@ then, you will get result of *TQ-ViT/S* inference phase:
 CUDA_VISIBLE_DEVICES=1 python validate.py --model tq_vit_small_patch16_224  --dataset imagenet1k --model-kwargs dic_dim=4 tq_level=[3,3,3,3] --mean 0.5 0.5 0.5 --std 0.5 0.5 0.5 --checkpoint ../tq_weight/tq_vit_small_patch16_224-79.34.pth.tar --data-dir /path/imagenet1k --reparam  --tome --tome-r 4
 ```
 
-then, you will get rsult of *TQ-ViT/S+ToMe(r=4)* inference phase:
+then, you will get rsult of `TQ-ViT/S+ToMe(r=4)` inference phase:
 ```sh
 {
     "dataset": "imagenet1k",
@@ -78,7 +83,7 @@ then, you will get rsult of *TQ-ViT/S+ToMe(r=4)* inference phase:
 ```sh
 CUDA_VISIBLE_DEVICES=1 python only_val_speed.py --model tq_vit_small_patch16_224 --model-kwargs dic_dim=4 tq_level=[3,3,3,3] --reparam
 ```
-then, you will get speed of *TQ-ViT/S* inference phase:
+then, you will get **speed (images/sec)** of TQ-ViT/S inference phase:
 ```sh
 {
     "model": "tq_vit_small_patch16_224",
