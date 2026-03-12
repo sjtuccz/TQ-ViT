@@ -20,7 +20,7 @@
 
 `only_val_speed.py`:pytorch-image-models/only_val_speed.py
 
-Please note that before testing the speed with the `only_val_speed.py` script, you should comment out line 76 in the tq_block.pyfile. This line is specifically used for counting codebook utility statistics.
+Please note that before testing the speed with the `only_val_speed.py` script, you should comment out line 76 in the tq_block.py file. This line is specifically used for counting codebook utility statistics.
 
 ## Training
 Hardware:
