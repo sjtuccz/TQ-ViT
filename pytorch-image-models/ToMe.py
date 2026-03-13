@@ -401,14 +401,11 @@ class ToMeBlock_TQ_ATTN(Block_TQ_ATTN):
             x, self._tome_info["size"] = merge_wavg(merge, x, self._tome_info["size"])
 
         input = x
-        feat0 = x # 蒸馏位置2
         x = self.norm2(x)
         x = self.mlp(x)
-        # feat = x # z蒸馏位置3
         x = self.ls2(x)
         x = self.drop_path2(x)
         x = x + input
-        feat = x # 蒸馏位置4
         return x
 
 
@@ -540,12 +537,12 @@ def apply_patch(
         model._tome_info["distill_token"] = True
     if isinstance(model, TQ_VisionTransformer):
         for module in model.modules():
-            if isinstance(module, Block_TQ_ATTN):
-                module._tome_info = model._tome_info
-                module.__class__ = ToMeBlock_TQ_ATTN
-            elif isinstance(module, Attention_TQ):
-                module.__class__ = ToMeAttention_TQ
-            elif isinstance(module, Attention):
+            # if isinstance(module, Block_TQ_ATTN):
+            #     module._tome_info = model._tome_info
+            #     module.__class__ = ToMeBlock_TQ_ATTN
+            # elif isinstance(module, Attention_TQ):
+            #     module.__class__ = ToMeAttention_TQ
+            if isinstance(module, Attention):
                 module.__class__ = ToMeAttention
             elif isinstance(module, Block_TQ_FFN):
                 module._tome_info = model._tome_info

@@ -213,10 +213,19 @@ def cal_qkvMatDot_FLOPs(tome, tome_r, batch=1,head_num=6,seq_len=197,dim=384,blo
     d=dim//head_num
     FLOPs = 0
     if tome:
+
+        # n = n - tome_r
+        # FLOPs= 0.5*block_num*(b*h*n*d + (2*d-1)*n*n*b*h + 3*b*h*n*n-1 + (2*n-1)*n*d*b*h)
+        origin_n = n
+        tome_n = origin_n - tome_r
         for i in range(block_num):
-            n = n-i*tome_r if n-i*tome_r>seq_len//2 else (seq_len//2 +1)
+            n = tome_n if i%2==0 else origin_n
             print(n)
             FLOPs+=0.5*(b*h*n*d + (2*d-1)*n*n*b*h + 3*b*h*n*n-1 + (2*n-1)*n*d*b*h)
+        # for i in range(block_num):
+        #     n = n-i*tome_r if n-i*tome_r>seq_len//2 else (seq_len//2 +1)
+        #     print(n)
+        #     FLOPs+=0.5*(b*h*n*d + (2*d-1)*n*n*b*h + 3*b*h*n*n-1 + (2*n-1)*n*d*b*h)
     else:
         FLOPs= 0.5*block_num*(b*h*n*d + (2*d-1)*n*n*b*h + 3*b*h*n*n-1 + (2*n-1)*n*d*b*h)
     return FLOPs

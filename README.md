@@ -44,7 +44,7 @@ CUDA_VISIBLE_DEVICES=2,3 python -m torch.distributed.run --nproc_per_node=2 --ma
 
 All efficiency metrics are tested on an `NVIDIA GeForce RTX 3080 Ti`.
 
-Please note that the **`--reparam`** option will perform token reparameterization on TQ-ViT, corresponding to the "inference phase" architecture in paper. **`--tome --tome-r 8`** option will perform token merginr on TQ-ViT,  corresponding to the "TQ-ViT+ToMe(r=8)" in paper.
+Please note that the **`--reparam`** option will perform token reparameterization on TQ-ViT, corresponding to the "inference phase" architecture in paper. **`--tome --tome-r 16`** option will perform token merging on TQ-ViT,  corresponding to the "TQ-ViT+ToMe(r=16)" in paper.
 
 For instance, you can test the model using the provided weights: *../tq_weight/tq_vit_small_patch16_224-79.34.pth.tar*. Due to supplement file size limitations, we have only uploaded the TQ-ViT/S weights. The weights for the other TQ models will be publicly available on GitHub.
 
@@ -58,24 +58,24 @@ then, you will get result of `TQ-ViT/S` inference phase:
     "model": "tq_vit_small_patch16_224",
     "top1": 79.338,
     "param_count": "12.37M",
-    "FLOPs": "2.082G",
+    "FLOPs": "2.523G",
     "codebook_utilization": "91.69%"
 }
 ```
 
 ```sh
-CUDA_VISIBLE_DEVICES=1 python validate.py --model tq_vit_small_patch16_224  --dataset imagenet1k --model-kwargs dic_dim=4 tq_level=[3,3,3,3] --mean 0.5 0.5 0.5 --std 0.5 0.5 0.5 --checkpoint ../tq_weight/tq_vit_small_patch16_224-79.34.pth.tar --data-dir /path/imagenet1k --reparam  --tome --tome-r 4
+CUDA_VISIBLE_DEVICES=1 python validate.py --model tq_vit_small_patch16_224  --dataset imagenet1k --model-kwargs dic_dim=4 tq_level=[3,3,3,3] --mean 0.5 0.5 0.5 --std 0.5 0.5 0.5 --checkpoint ../tq_weight/tq_vit_small_patch16_224-79.34.pth.tar --data-dir /path/imagenet1k --reparam  --tome --tome-r 16
 ```
 
-then, you will get rsult of `TQ-ViT/S+ToMe(r=4)` inference phase:
+then, you will get rsult of `TQ-ViT/S+ToMe(r=16)` inference phase:
 ```sh
 {
     "dataset": "imagenet1k",
     "model": "tq_vit_small_patch16_224",
-    "top1": 78.356,
+    "top1": 78.4,
     "param_count": "12.37M",
     "FLOPs": "2.082G",
-    "codebook_utilization": "91.69%"
+    "codebook_utilization": "91.63%"
 }
 
 ```
