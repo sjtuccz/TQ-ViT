@@ -109,8 +109,6 @@ class TQ_Qscale_deQscale(nn.Module):
         return codes_non_centered
 
     def _scale_and_shift_inverse(self, zhat):
-        # half_width = self._levels // 2
-        # return (zhat - half_width) / half_width * self.anti_q
         return (zhat - self.half_l) / self.half_l * self.anti_q
 
     def _indices_to_codes(self, indices):
@@ -135,23 +133,7 @@ class TQ_Qscale_deQscale(nn.Module):
         
     def quantize2index(self, z):
         return z.mul_(self._inv_T_raw).tanh_().mul_(self.half_l).round().add_(self.half_l).mul_(self._basis).sum(dim=-1).to(torch.int32)
-    # def _scale_and_shift(self, zhat_normalized):
-    #     half_l = self._levels // 2
-    #     return (zhat_normalized * half_l / self.anti_q) + half_l
-    # def quantize(self, z):
-    #     # print("z shape :",z.shape)
-    #     """ Quantizes z, returns quantized zhat, same shape as z. """
-    #     quantized = self.round_ste(self.bound(z)).to(z.device)
-    #     # quantized = self.round_rotation(self.bound(z)).to(z.device)
-    #     half_l = (self._levels // 2).to(z.device)# Renormalize to [-T, T].
-    #     return quantized / half_l *self.anti_q
 
-
-    # def codes_to_indices(self, zhat):
-    #         """ Converts a `code` to an index in the codebook. """
-    #         assert zhat.shape[-1] == self.codebook_dim
-    #         zhat = self._scale_and_shift(zhat)
-    #         return (zhat * self._basis).sum(dim=-1).to(torch.int32)
 class CodebookMeter:
     """Computes Codebook utilization using PyTorch tensors."""
     
